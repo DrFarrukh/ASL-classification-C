@@ -88,8 +88,8 @@ The system captures motion data from multiple MPU6050 sensors connected via a TC
 
 1. Clone this repository to your Jetson Nano:
    ```bash
-   git clone https://github.com/DrFarrukh/asl-classification-c.git
-   cd asl-classification-c
+   git clone https://github.com/DrFarrukh/ASL-classification-C.git
+   cd ASL-classification-C
    ```
 
 2. Compile the C code:
