@@ -42,11 +42,18 @@ The system captures motion data from multiple MPU6050 sensors connected via a TC
    - Verifies the converted model works correctly
    - Improves inference performance in the Docker container
 
-5. **`run_asl_classifier.sh`**: Launcher script for the Docker container
+5. **`run_asl_classifier.sh`**: Launcher script that uses the jetson-inference Docker run script
    - Compiles the C code if needed
    - Converts the model to TorchScript if needed
    - Finds the Jetson Docker run script
-   - Launches the Docker container with necessary mounts and devices
+   - Launches the Docker container with necessary mounts
+
+6. **`run_direct.sh`**: Direct launcher script for the Docker container (recommended)
+   - Compiles the C code if needed
+   - Directly runs the Docker container with full GPU access
+   - Mounts all necessary devices (I2C, display, video)
+   - Includes all Jetson-specific system mounts
+   - More reliable than using the wrapper script
 
 6. **`Dockerfile`**: Definition for the Docker container (optional)
    - Based on the NVIDIA L4T PyTorch container
@@ -103,16 +110,23 @@ The system captures motion data from multiple MPU6050 sensors connected via a TC
 
 ## Usage
 
-1. Run the launcher script:
+1. Run the direct launcher script (recommended):
    ```bash
-   ./run_asl_classifier.sh
+   ./run_direct.sh
    ```
 
 2. The script will:
    - Compile the C code if needed
-   - Convert the model if needed
-   - Find the Docker run script (or prompt you for its location)
-   - Launch the Docker container with all necessary configurations
+   - Set up display forwarding if available
+   - Detect and mount video and I2C devices
+   - Create the necessary system mounts for GPU access
+   - Run the Docker container with full GPU access
+   - Execute the realtime classifier inside the container
+
+3. Alternatively, you can use the original launcher script that uses the jetson-inference Docker run script:
+   ```bash
+   ./run_asl_classifier.sh
+   ```
 
 3. Inside the Docker container, the classifier will:
    - Read data from the MPU6050 sensors
@@ -159,8 +173,12 @@ If you want to use a different model:
 ### Docker Issues
 
 - Ensure Docker is properly installed on your Jetson Nano
-- Verify the path to the Docker run script in `run_asl_classifier.sh`
-- Check that the Docker container has access to the I2C devices
+- If `run_asl_classifier.sh` fails, try using `run_direct.sh` instead
+- Make sure the dustynv/l4t-pytorch container is available
+  ```bash
+  sudo docker pull dustynv/l4t-pytorch:r32.7.1-pth1.10-py3
+  ```
+- If you see "No module named 'torch'" error outside Docker, this is normal - PyTorch is only available inside the container
 
 ### Classification Issues
 

@@ -63,11 +63,17 @@ echo "Using Docker run script at: $DOCKER_SCRIPT_PATH"
 # 3. Run our realtime_classifier.py script
 
 echo "Starting ASL classifier in Docker container..."
+# Change to the jetson-inference directory first
+DOCKER_DIR=$(dirname "$DOCKER_SCRIPT_PATH")
+JETSON_INFERENCE_DIR=$(dirname "$DOCKER_DIR")
+cd "$JETSON_INFERENCE_DIR"
+
+# Run the Docker container
 "$DOCKER_SCRIPT_PATH" \
     --volume "$ASL_DIR:/asl" \
-    --device /dev/i2c-0 \
-    --device /dev/i2c-1 \
-    --device /dev/i2c-2 \
-    --run "cd /asl && python3 realtime_classifier.py --use-jit"
+    --run "cd /asl && ls -la && python3 realtime_classifier.py --use-jit"
+
+# Return to the original directory
+cd "$ASL_DIR"
 
 echo "ASL classifier Docker container exited."
