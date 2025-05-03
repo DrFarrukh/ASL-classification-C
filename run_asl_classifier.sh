@@ -71,7 +71,7 @@ cd "$JETSON_INFERENCE_DIR"
 # Run the Docker container
 "$DOCKER_SCRIPT_PATH" \
     --volume "$ASL_DIR:/asl" \
-    --run "cd /asl && ls -la && python3 realtime_classifier.py --use-jit"
+    --run /bin/bash -c "cd /asl && ls -la && python3 realtime_classifier.py --use-jit"
 
 # Return to the original directory
 cd "$ASL_DIR"

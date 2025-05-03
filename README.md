@@ -42,11 +42,12 @@ The system captures motion data from multiple MPU6050 sensors connected via a TC
    - Verifies the converted model works correctly
    - Improves inference performance in the Docker container
 
-5. **`run_asl_classifier.sh`**: Launcher script that uses the jetson-inference Docker run script
+5. **`run_asl_classifier.sh`**: Launcher script for the Docker container
    - Compiles the C code if needed
    - Converts the model to TorchScript if needed
    - Finds the Jetson Docker run script
-   - Launches the Docker container with necessary mounts
+   - Launches the Docker container with necessary mounts and devices
+   - **Now correctly runs commands inside the container using `/bin/bash -c`, fixing issues with `cd` not found errors**
 
 6. **`run_direct.sh`**: Direct launcher script for the Docker container (recommended)
    - Compiles the C code if needed
@@ -173,12 +174,9 @@ If you want to use a different model:
 ### Docker Issues
 
 - Ensure Docker is properly installed on your Jetson Nano
-- If `run_asl_classifier.sh` fails, try using `run_direct.sh` instead
-- Make sure the dustynv/l4t-pytorch container is available
-  ```bash
-  sudo docker pull dustynv/l4t-pytorch:r32.7.1-pth1.10-py3
-  ```
-- If you see "No module named 'torch'" error outside Docker, this is normal - PyTorch is only available inside the container
+- Verify the path to the Docker run script in `run_asl_classifier.sh`
+- Check that the Docker container has access to the I2C devices
+- **If you previously saw an error like `exec: "cd": executable file not found in $PATH`, this has been fixed in the latest version of `run_asl_classifier.sh` by running commands using `/bin/bash -c` inside the container.**
 
 ### Classification Issues
 
