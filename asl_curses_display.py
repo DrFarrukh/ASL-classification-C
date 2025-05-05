@@ -9,6 +9,7 @@ import queue
 import signal
 import sys
 import os
+import curses
 from collections import deque
 
 # --- Raw Signal Model definition ---
@@ -34,18 +35,28 @@ class RawSignalCNN(nn.Module):
         return x
 
 class SensorDataProcessor:
-    def __init__(self, model_path, window_size=30, confidence_threshold=0.3, use_jit=True, debug=False):
+    def __init__(self, model_path, window_size=30, confidence_threshold=0.3, use_jit=True, stdscr=None):
         self.window_size = window_size
         self.confidence_threshold = confidence_threshold
         self.num_classes = 27
         self.class_names = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','Rest','S','T','U','V','W','X','Y','Z']
-        self.debug = debug
+        self.stdscr = stdscr
         
-        print(f"\nInitializing SensorDataProcessor with:")
-        print(f"  Window size: {window_size}")
-        print(f"  Confidence threshold: {confidence_threshold}")
-        print(f"  Use JIT: {use_jit}")
-        print(f"  Debug mode: {debug}")
+        # Initialize curses colors if we have a screen
+        if self.stdscr:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_GREEN, -1)  # Green for high confidence
+            curses.init_pair(2, curses.COLOR_YELLOW, -1)  # Yellow for medium confidence
+            curses.init_pair(3, curses.COLOR_RED, -1)    # Red for low confidence
+            curses.init_pair(4, curses.COLOR_CYAN, -1)   # Cyan for headers
+            curses.init_pair(5, curses.COLOR_WHITE, -1)  # White for normal text
+            self.stdscr.clear()
+            
+        self.log(f"Initializing SensorDataProcessor with:")
+        self.log(f"  Window size: {window_size}")
+        self.log(f"  Confidence threshold: {confidence_threshold}")
+        self.log(f"  Use JIT: {use_jit}")
 
         # Initialize data buffers for each sensor
         self.sensor_buffers = [deque(maxlen=window_size) for _ in range(5)]
@@ -60,38 +71,46 @@ class SensorDataProcessor:
         self.recent_confidences = []
 
         # Load model
-        print(f"Loading model from {model_path}...")
+        self.log(f"Loading model from {model_path}...")
         # Construct potential JIT model path
         model_jit_path = model_path.replace('.pth', '_jit.pt')
         if use_jit and os.path.exists(model_jit_path):
             try:
                 self.model = torch.jit.load(model_jit_path)
-                print(f"Successfully loaded JIT model from {model_jit_path}")
+                self.log(f"Successfully loaded JIT model from {model_jit_path}")
             except Exception as e:
-                print(f"Failed to load JIT model from {model_jit_path}: {e}")
-                print("Falling back to regular model loading...")
+                self.log(f"Failed to load JIT model from {model_jit_path}: {e}")
+                self.log("Falling back to regular model loading...")
                 self.model = self._load_regular_model(model_path)
         else:
             if use_jit:
-                 print(f"JIT model not found at {model_jit_path}. Loading regular model.")
+                 self.log(f"JIT model not found at {model_jit_path}. Loading regular model.")
             else:
-                 print("JIT model not requested. Loading regular model.")
+                 self.log("JIT model not requested. Loading regular model.")
             self.model = self._load_regular_model(model_path)
 
         self.model.eval()
-        print("Model loaded and ready for inference")
+        self.log("Model loaded and ready for inference")
+
+    def log(self, message):
+        """Log a message to the screen or stdout"""
+        if self.stdscr:
+            # Add to a log buffer that we could display if needed
+            pass
+        else:
+            print(message)
 
     def _load_regular_model(self, model_path):
         model = RawSignalCNN(num_classes=self.num_classes)
         try:
             # Check if the regular model file exists
             if not os.path.exists(model_path):
-                 print(f"Error: Model file not found at {model_path}")
+                 self.log(f"Error: Model file not found at {model_path}")
                  sys.exit(1)
             model.load_state_dict(torch.load(model_path, map_location='cpu'))
-            print(f"Successfully loaded regular model from {model_path}")
+            self.log(f"Successfully loaded regular model from {model_path}")
         except Exception as e:
-             print(f"Error loading model state dict from {model_path}: {e}")
+             self.log(f"Error loading model state dict from {model_path}: {e}")
              sys.exit(1)
         return model
 
@@ -100,21 +119,21 @@ class SensorDataProcessor:
         # Construct path relative to this script's location
         c_executable = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mpu6050_reader")
         if not os.path.exists(c_executable):
-            print(f"C executable not found at {c_executable}. Please compile NEW_C.c first.")
-            print("Hint: gcc -o mpu6050_reader NEW_C.c -lm")
+            self.log(f"C executable not found at {c_executable}. Please compile NEW_C.c first.")
+            self.log("Hint: gcc -o mpu6050_reader NEW_C.c -lm")
             sys.exit(1)
 
         # Check if the process needs execution permissions
         if not os.access(c_executable, os.X_OK):
-            print(f"Adding execute permissions to {c_executable}")
+            self.log(f"Adding execute permissions to {c_executable}")
             try:
                 os.chmod(c_executable, 0o755)
             except OSError as e:
-                print(f"Error setting execute permission for {c_executable}: {e}")
+                self.log(f"Error setting execute permission for {c_executable}: {e}")
 
         # Start the C process
         cmd = [c_executable, i2c_device]
-        print(f"Starting C process: {' '.join(cmd)}")
+        self.log(f"Starting C process: {' '.join(cmd)}")
         try:
             self.process = subprocess.Popen(
                 cmd,
@@ -124,28 +143,28 @@ class SensorDataProcessor:
                 universal_newlines=True,  # Text mode
                 preexec_fn=os.setsid  # Create a new process group
             )
-            print(f"Started sensor data collection process (PID: {self.process.pid})")
+            self.log(f"Started sensor data collection process (PID: {self.process.pid})")
         except Exception as e:
-            print(f"Error starting C process: {e}")
+            self.log(f"Error starting C process: {e}")
             sys.exit(1)
 
         # Start threads to read from stdout and stderr
         self.reader_thread = threading.Thread(target=self._read_process_output, name="StdoutReader")
         self.reader_thread.daemon = True
         self.reader_thread.start()
-        print("Stdout reader thread started.")
+        self.log("Stdout reader thread started.")
 
         self.stderr_thread = threading.Thread(target=self._read_process_stderr, name="StderrReader")
         self.stderr_thread.daemon = True
         self.stderr_thread.start()
-        print("Stderr reader thread started.")
+        self.log("Stderr reader thread started.")
 
     def _read_process_output(self):
         """Read data from the C process stdout"""
-        print("Stdout reader thread started.")
+        self.log("Stdout reader thread started.")
         # Ensure process and stdout exist before entering loop
         if not hasattr(self, 'process') or not self.process.stdout:
-             print("Error: C process or stdout not available for reading.")
+             self.log("Error: C process or stdout not available for reading.")
              self.running = False # Signal main loop to stop
              return
 
@@ -168,13 +187,10 @@ class SensorDataProcessor:
                 if not line:
                     continue
 
-                # Debug print raw line
-                print(f"Raw C Output: {line}")
-
                 # Parse the line: sensor_index ax ay az gx gy gz
                 parts = line.split()
                 if len(parts) != 7:
-                    print(f"Skipping invalid line (expected 7 parts, got {len(parts)}): {line}")
+                    self.log(f"Skipping invalid line (expected 7 parts, got {len(parts)}): {line}")
                     continue
 
                 # Use try-except for robust parsing
@@ -182,7 +198,7 @@ class SensorDataProcessor:
                     sensor_idx = int(parts[0])
                     # Validate sensor index range
                     if not (0 <= sensor_idx < 5):
-                        print(f"Skipping invalid sensor index ({sensor_idx}): {line}")
+                        self.log(f"Skipping invalid sensor index ({sensor_idx}): {line}")
                         continue
 
                     # Extract sensor values in the order they appear in the C output
@@ -194,7 +210,7 @@ class SensorDataProcessor:
                     data_point = [gx, gy, gz, ax, ay, az]
 
                 except ValueError as e:
-                    print(f"Error parsing numeric values in line '{line}': {e}")
+                    self.log(f"Error parsing numeric values in line '{line}': {e}")
                     continue # Skip this line
 
                 # Add to the appropriate sensor buffer
@@ -206,12 +222,12 @@ class SensorDataProcessor:
             except Exception as e:
                 # Catch unexpected errors during the read/process loop
                 if self.running: # Avoid printing errors during shutdown
-                     print(f"Unexpected error in stdout reader thread: {e}")
+                     self.log(f"Unexpected error in stdout reader thread: {e}")
                      import traceback
                      traceback.print_exc()
                 time.sleep(0.1) # Avoid tight loop on continuous error
 
-        print("Stdout reader thread finished.")
+        self.log("Stdout reader thread finished.")
 
     def _read_process_stderr(self):
         """Read data from the C process stderr"""
@@ -222,60 +238,128 @@ class SensorDataProcessor:
                 
                 line = line.strip()
                 if line:
-                    print(f"[C Stderr]: {line}")
+                    # Just log C stderr messages at debug level
+                    pass
                     
                     # Check for initialization message
                     if "initialized" in line.lower() or "connected" in line.lower():
-                        print("C process initialized successfully.")
+                        self.log("C process initialized successfully.")
         except Exception as e:
             if self.running:
-                print(f"Error reading stderr: {e}")
+                self.log(f"Error reading stderr: {e}")
         finally:
             # Check if there's any final stderr output
             if hasattr(self, 'process') and self.process.poll() is not None:
                 remaining = self.process.stderr.read()
                 if remaining:
-                    print(f"[C Stderr - Final]: {remaining.strip()}")
-            print("Stderr reader thread finished.")
+                    self.log(f"[C Stderr - Final]: {remaining.strip()}")
+            self.log("Stderr reader thread finished.")
 
     def _check_and_process_data(self):
         """Check if all buffers are full and queue data for prediction."""
         # Get current buffer sizes
         buffer_sizes = [len(buffer) for buffer in self.sensor_buffers]
         
-        # Print buffer sizes every 10 calls (to avoid flooding the console)
-        if hasattr(self, '_check_count'):
-            self._check_count += 1
-            if self._check_count % 10 == 0:
-                print(f"Buffer sizes: {buffer_sizes} (need {self.window_size} each)")
-        else:
-            self._check_count = 0
-            print(f"Buffer sizes: {buffer_sizes} (need {self.window_size} each)")
-        
         # Check if all buffers have enough data
         if all(size >= self.window_size for size in buffer_sizes):
-            print(f"\n*** All buffers filled! Preparing data for prediction ***\n")
             # Create a numpy array from the buffers
             window_data = np.array([list(buffer) for buffer in self.sensor_buffers])
             
             # Queue the data for processing
             try:
                 self.data_queue.put(window_data, block=False)
-                print(f"Data queued for prediction. Queue size: {self.data_queue.qsize()}")
             except queue.Full:
                 # Queue is full, skip this window
-                print("Queue full, skipping this window")
                 pass
+
+    def update_display(self, pred_idx, confidence):
+        """Update the curses display with the prediction"""
+        if not self.stdscr:
+            return
+            
+        try:
+            self.stdscr.clear()
+            height, width = self.stdscr.getmaxyx()
+            
+            # Title
+            title = "ASL CLASSIFIER"
+            self.stdscr.addstr(1, (width - len(title)) // 2, title, curses.color_pair(4) | curses.A_BOLD)
+            
+            # Current time
+            time_str = time.strftime("%H:%M:%S")
+            self.stdscr.addstr(1, width - len(time_str) - 2, time_str, curses.color_pair(5))
+            
+            # Divider
+            self.stdscr.addstr(2, 0, "=" * (width-1), curses.color_pair(5))
+            
+            # Current prediction (large letter)
+            letter = self.class_names[pred_idx]
+            letter_y = 5
+            letter_x = (width - len(letter)) // 2
+            
+            # Choose color based on confidence
+            if confidence >= 0.7:
+                color = curses.color_pair(1)  # Green
+            elif confidence >= 0.4:
+                color = curses.color_pair(2)  # Yellow
+            else:
+                color = curses.color_pair(3)  # Red
+                
+            self.stdscr.addstr(letter_y, letter_x, letter, color | curses.A_BOLD)
+            
+            # Confidence bar
+            conf_label = "Confidence: "
+            self.stdscr.addstr(letter_y + 3, 2, conf_label, curses.color_pair(5))
+            
+            bar_width = width - len(conf_label) - 10
+            filled = int(bar_width * confidence)
+            
+            # Draw the bar
+            self.stdscr.addstr(letter_y + 3, 2 + len(conf_label), "[" + "#" * filled + "-" * (bar_width - filled) + "]", color)
+            
+            # Confidence percentage
+            conf_pct = f"{int(confidence * 100)}%"
+            self.stdscr.addstr(letter_y + 3, width - len(conf_pct) - 2, conf_pct, color)
+            
+            # Recent predictions
+            self.stdscr.addstr(letter_y + 5, 2, "Recent Predictions:", curses.color_pair(4))
+            
+            for i, (idx, conf) in enumerate(zip(self.recent_predictions[-5:], self.recent_confidences[-5:])):
+                if i >= 5:  # Show at most 5 recent predictions
+                    break
+                    
+                l = self.class_names[idx]
+                
+                # Choose color based on confidence
+                if conf >= 0.7:
+                    color = curses.color_pair(1)  # Green
+                elif conf >= 0.4:
+                    color = curses.color_pair(2)  # Yellow
+                else:
+                    color = curses.color_pair(3)  # Red
+                    
+                # Create a mini bar
+                mini_width = 20
+                mini_filled = int(mini_width * conf)
+                mini_bar = "[" + "#" * mini_filled + "-" * (mini_width - mini_filled) + "]"
+                
+                self.stdscr.addstr(letter_y + 6 + i, 4, f"{l} {mini_bar} {conf:.2f}", color)
+            
+            # Instructions
+            self.stdscr.addstr(height-2, 2, "Press 'q' to quit", curses.color_pair(5))
+            
+            # Refresh the screen
+            self.stdscr.refresh()
+            
+        except Exception as e:
+            # If there's an error updating the display, fall back to text mode
+            self.stdscr = None
+            print(f"Error updating display: {e}")
+            print(f"Falling back to text mode")
 
     def process_data_loop(self):
         """Main loop for processing data and making predictions"""
-        print("Processing thread started.")
-        print(f"Using model: {self.model.__class__.__name__}")
-        print(f"Confidence threshold: {self.confidence_threshold}")
-        print(f"Window size: {self.window_size}")
-        print(f"Number of classes: {self.num_classes}")
-        print(f"Class names: {self.class_names}")
-        print("Waiting for data...")
+        self.log("Processing thread started.")
         
         while self.running:
             try:
@@ -283,7 +367,6 @@ class SensorDataProcessor:
                 try:
                     # Block for a short time to wait for data
                     window_data = self.data_queue.get(timeout=0.1)
-                    print("\n*** Got data from queue for prediction ***")
                 except queue.Empty:
                     # No data available, continue loop
                     # Check if we should still be running
@@ -294,28 +377,16 @@ class SensorDataProcessor:
                 # Prepare data for model
                 # Expected input shape: (1, 6, 5, 1, window_size)
                 x = window_data.astype(np.float32)  # (5, window, 6)
-                print(f"Data shape after initial conversion: {x.shape}")
                 x = np.transpose(x, (2, 0, 1))  # (6, 5, window)
-                print(f"Data shape after transpose: {x.shape}")
                 x = np.expand_dims(x, axis=2)  # (6, 5, 1, window)
-                print(f"Data shape after expand_dims: {x.shape}")
                 x_tensor = torch.from_numpy(x).unsqueeze(0)  # (1, 6, 5, 1, window)
-                print(f"Final tensor shape: {x_tensor.shape}")
 
                 # Make prediction
-                try:
-                    print("Running model inference...")
-                    with torch.no_grad():
-                        logits = self.model(x_tensor)
-                        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-                        pred_idx = int(np.argmax(probs))
-                        confidence = probs[pred_idx]
-                    print(f"Prediction successful! Predicted: {self.class_names[pred_idx]} with confidence {confidence:.4f}")
-                except Exception as e:
-                    print(f"Error during model inference: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
+                with torch.no_grad():
+                    logits = self.model(x_tensor)
+                    probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                    pred_idx = int(np.argmax(probs))
+                    confidence = probs[pred_idx]
 
                 # Store recent predictions
                 self.recent_predictions.append(pred_idx)
@@ -335,65 +406,26 @@ class SensorDataProcessor:
                         self.last_confidence = confidence
                         self.last_report_time = current_time
                         
-                        # Print a more visual representation of the prediction
-                        self._print_visual_prediction(pred_idx, confidence)
-                else:
-                    # Always print visual prediction in debug mode
-                    if self.debug:
-                        print(f"Prediction below threshold or unchanged: {self.class_names[pred_idx]} ({confidence:.4f})")
-                        # Still update visual every few seconds even if prediction is unchanged
-                        if current_time - self.last_report_time > 3.0:
-                            self._print_visual_prediction(pred_idx, confidence)
-                            self.last_report_time = current_time
+                # Always update the display
+                self.update_display(pred_idx, confidence)
+
+                # Check for user input if we're using curses
+                if self.stdscr:
+                    try:
+                        key = self.stdscr.getch()
+                        if key == ord('q'):
+                            self.running = False
+                            break
+                    except:
+                        pass
 
             except Exception as e:
                 if self.running:
-                    print(f"Error in processing loop: {e}")
+                    self.log(f"Error in processing loop: {e}")
                     import traceback
                     traceback.print_exc()
                 time.sleep(0.1) # Avoid tight loop on error
-        print("Processing thread finished.")
-
-    def _print_visual_prediction(self, pred_idx, confidence):
-        """Print a more visual representation of the prediction"""
-        # Clear the terminal
-        os.system('clear')
-        
-        # Print header
-        print("\n" + "="*60)
-        print(f"  REAL-TIME ASL CLASSIFICATION - {time.strftime('%H:%M:%S')}")
-        print("="*60)
-        
-        # Print current prediction with confidence bar (using ASCII only)
-        predicted_letter = self.class_names[pred_idx]
-        bar_length = 40
-        filled_length = int(bar_length * confidence)
-        bar = '#' * filled_length + '-' * (bar_length - filled_length)
-        
-        print(f"\n  CURRENT PREDICTION: {predicted_letter}")
-        print(f"  Confidence: [{bar}] {confidence:.2f}")
-        
-        # Print recent predictions
-        if self.recent_predictions:
-            print("\n  RECENT PREDICTIONS:")
-            for i, (idx, conf) in enumerate(zip(self.recent_predictions[-5:], self.recent_confidences[-5:])):
-                letter = self.class_names[idx]
-                mini_bar_length = 20
-                mini_filled = int(mini_bar_length * conf)
-                mini_bar = '#' * mini_filled + '-' * (mini_bar_length - mini_filled)
-                print(f"  {letter} [{mini_bar}] {conf:.2f}")
-        
-        # Print all class probabilities in a compact format
-        print("\n  ALL PROBABILITIES:")
-        cols = 9  # Number of columns
-        for i in range(0, len(self.class_names), cols):
-            row = self.class_names[i:i+cols]
-            probs = [f"{self.class_names[j]}: {probs[j]:.2f}" for j in range(i, min(i+cols, len(self.class_names)))]
-            print("  " + " | ".join(probs))
-        
-        print("\n" + "="*60)
-        print("  Press Ctrl+C to stop")
-        print("="*60 + "\n")
+        self.log("Processing thread finished.")
 
     def start(self, i2c_device="/dev/i2c-1"):
         """Start the data collection and processing"""
@@ -409,7 +441,7 @@ class SensorDataProcessor:
         self.processor_thread.daemon = True
         self.processor_thread.start()
 
-        print("Real-time classification starting. Press Ctrl+C to stop.")
+        self.log("Real-time classification starting. Press Ctrl+C to stop.")
 
         try:
             # Monitor the C process
@@ -417,8 +449,8 @@ class SensorDataProcessor:
                 # Check if the C process is still running
                 if self.process.poll() is not None:
                     exit_code = self.process.returncode
-                    print(f"C process exited unexpectedly. Stopping...")
-                    print(f"C process exit code: {exit_code}")
+                    self.log(f"C process exited unexpectedly. Stopping...")
+                    self.log(f"C process exit code: {exit_code}")
                     self.running = False
                     self.stop()
                     break
@@ -426,55 +458,54 @@ class SensorDataProcessor:
                 # Sleep to avoid tight loop
                 time.sleep(0.1)
         except KeyboardInterrupt:
-            print("\nKeyboard interrupt received. Stopping...")
+            self.log("\nKeyboard interrupt received. Stopping...")
             self.running = False
             self.stop()
         except Exception as e:
-            print(f"Error in main loop: {e}")
+            self.log(f"Error in main loop: {e}")
             self.running = False
             self.stop()
 
     def _signal_handler(self, sig, frame):
-        print(f"\nReceived signal {sig}. Stopping...")
+        self.log(f"\nReceived signal {sig}. Stopping...")
         self.running = False
         self.stop()
 
     def stop(self):
         """Stop all threads and processes gracefully"""
-        print("Stopping real-time classification...")
+        self.log("Stopping real-time classification...")
         self.running = False
             
         # Terminate the C process if it's still running
         if hasattr(self, 'process') and self.process.poll() is None:
-            print("Terminating C process...")
+            self.log("Terminating C process...")
             # Send SIGTERM to the process group
             try:
                 os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
             except Exception as e:
-                print(f"Error sending SIGTERM to process group: {e}")
+                self.log(f"Error sending SIGTERM to process group: {e}")
                 
             # Fallback: terminate the process directly
             self.process.terminate() 
             try:
                 # Wait for a short period for graceful termination
                 self.process.wait(timeout=2.0)
-                print("C process terminated gracefully.")
+                self.log("C process terminated gracefully.")
             except subprocess.TimeoutExpired:
-                print("C process did not terminate gracefully after SIGTERM, sending SIGKILL...")
+                self.log("C process did not terminate gracefully after SIGTERM, sending SIGKILL...")
                 self.process.kill() # Force kill if needed
                 try:
                      self.process.wait(timeout=1.0) # Wait briefly for kill
-                     print("C process killed.")
+                     self.log("C process killed.")
                 except subprocess.TimeoutExpired:
-                     print("Warning: C process did not respond to SIGKILL.")
+                     self.log("Warning: C process did not respond to SIGKILL.")
             except Exception as e:
-                 print(f"Error during C process termination: {e}")
+                 self.log(f"Error during C process termination: {e}")
         elif hasattr(self, 'process'):
-             # print("C process already terminated.")
              pass # Process already finished
 
         # Wait for threads to finish
-        print("Waiting for threads to finish...")
+        self.log("Waiting for threads to finish...")
         threads_to_join = []
         if hasattr(self, 'reader_thread') and self.reader_thread.is_alive():
              threads_to_join.append(self.reader_thread)
@@ -486,21 +517,15 @@ class SensorDataProcessor:
         for thread in threads_to_join:
              try:
                   thread.join(timeout=1.5)
-                  # print(f"Thread {thread.name} finished.")
              except Exception as e:
-                  print(f"Error joining thread {thread.name}: {e}")
-                  
-        # Check if threads are still alive after join timeout
-        # alive_threads = [t.name for t in threads_to_join if t.is_alive()]
-        # if alive_threads:
-        #      print(f"Warning: The following threads did not finish gracefully: {', '.join(alive_threads)}")
+                  self.log(f"Error joining thread {thread.name}: {e}")
 
-        print("Real-time classification stopped.")
+        self.log("Real-time classification stopped.")
         # Use os._exit(0) for a more immediate exit in case of lingering threads
         # sys.exit(0) # Use standard exit
         os._exit(0) # Force exit if necessary
 
-def main():
+def main(stdscr=None):
     parser = argparse.ArgumentParser(description="Real-time ASL classification from MPU6050 sensors")
     parser.add_argument('--model', type=str, default="best_rawsignal_cnn.pth",
                         help="Path to model .pth file (JIT version '<model_name>_jit.pt' will be checked if --use-jit is set)")
@@ -512,8 +537,8 @@ def main():
                         help="I2C device path")
     parser.add_argument('--use-jit', action='store_true',
                         help="Use TorchScript JIT model if available (looks for <model_name>_jit.pt)")
-    parser.add_argument('--debug', action='store_true',
-                        help="Enable additional debug output")
+    parser.add_argument('--no-gui', action='store_true',
+                        help="Disable curses GUI and use text mode only")
     args = parser.parse_args()
 
     # List all files in the current directory to help debug model loading issues
@@ -583,10 +608,20 @@ def main():
         window_size=args.window,
         confidence_threshold=args.threshold,
         use_jit=args.use_jit,
-        debug=args.debug
+        stdscr=None if args.no_gui else stdscr
     )
 
     processor.start(i2c_device=args.i2c)
 
 if __name__ == "__main__":
-    main()
+    # Check if we should use curses or not
+    if '--no-gui' in sys.argv:
+        main()
+    else:
+        try:
+            curses.wrapper(main)
+        except Exception as e:
+            print(f"Error initializing curses: {e}")
+            print("Falling back to text mode")
+            sys.argv.append('--no-gui')
+            main()
