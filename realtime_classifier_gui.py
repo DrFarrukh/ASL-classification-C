@@ -263,6 +263,14 @@ class SensorDataProcessor:
         self.class_names = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','Rest','S','T','U','V','W','X','Y','Z']
         self.gui = gui
         self.model_type = model_type
+        self.running = True
+        
+        # Initialize data buffers for each sensor
+        self.sensor_buffers = [deque(maxlen=window_size) for _ in range(5)]
+        self.data_queue = queue.Queue()
+        self.last_prediction = None
+        self.last_confidence = 0.0
+        self.last_probs = None
         
         print(f"\nInitializing SensorDataProcessor with:")
         print(f"  Window size: {window_size}")
@@ -393,7 +401,7 @@ class SensorDataProcessor:
         print("Stdout reader thread started.")
         try:
             for line in self.process.stdout:
-                if not hasattr(self, 'running') or self.running:
+                if self.running:
                     try:
                         # Parse the line from the C process
                         line = line.strip()
@@ -409,9 +417,13 @@ class SensorDataProcessor:
                                 ay = float(parts[8]) if len(parts) > 8 else 0
                                 az = float(parts[9]) if len(parts) > 9 else 0
                                 
-                                # Process the sensor data
-                                # TODO: Add sensor data processing here
-                                print(f"Received data from sensor {sensor_idx}: gx={gx}, gy={gy}, gz={gz}, ax={ax}, ay={ay}, az={az}")
+                                # Store data in the appropriate sensor buffer
+                                if 0 <= sensor_idx < 5:  # We have 5 sensors (0-4)
+                                    sensor_data = [gx, gy, gz, ax, ay, az]
+                                    self.sensor_buffers[sensor_idx].append(sensor_data)
+                                    
+                                    # Check if all buffers are full enough for prediction
+                                    self._check_and_process_data()
                     except Exception as e:
                         print(f"Error processing stdout line: {e}")
                 else:
@@ -433,35 +445,93 @@ class SensorDataProcessor:
             print(f"Error in stderr reader thread: {e}")
         print("Stderr reader thread finished.")
 
-# Inference and data processing logic (wherever window_data is processed for prediction)
-# (This will be inside the SensorDataProcessor class, in the thread/process loop)
-# Example (real code):
-if self.model_type == 'scalogram':
-    # window_data: (5, window, 6)
-    window_data = np.array(window_data)
-    grid_img = make_scalogram_grid(window_data)  # (H, W, 3)
-    img_pil = Image.fromarray((grid_img*255).astype(np.uint8))
-    img_pil = img_pil.resize((128, 128))
-    img_arr = np.array(img_pil).astype(np.float32) / 255.0
-    img_arr = (img_arr - 0.5) / 0.5  # Normalize to [-1, 1]
-    img_arr = np.transpose(img_arr, (2, 0, 1))  # (3, H, W)
-    img_tensor = torch.tensor(img_arr).unsqueeze(0)  # (1, 3, H, W)
-    with torch.no_grad():
-        logits = self.model(img_tensor)
-        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-        pred_idx = int(np.argmax(probs))
-        confidence = float(probs[pred_idx])
-else:
-    # Raw signal model
-    window_data = np.array(window_data)
-    window_tensor = torch.tensor(window_data, dtype=torch.float32).unsqueeze(0)  # (1, 5, window, 6)
-    window_tensor = window_tensor.permute(0, 3, 1, 2).contiguous()  # (1, 6, 5, window)
-    window_tensor = window_tensor.unsqueeze(2)  # (1, 6, 1, 5, window)
-    with torch.no_grad():
-        logits = self.model(window_tensor)
-        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-        pred_idx = int(np.argmax(probs))
-        confidence = float(probs[pred_idx])
+    def _check_and_process_data(self):
+        """Check if all buffers are full and queue data for prediction."""
+        # Check if all buffers have enough data
+        if all(len(buffer) >= self.window_size for buffer in self.sensor_buffers):
+            # Create a numpy array from the buffers
+            window_data = np.array([list(buffer) for buffer in self.sensor_buffers])
+            
+            # Queue the data for processing
+            try:
+                self.data_queue.put(window_data, block=False)
+                print(f"Data queued for prediction. Queue size: {self.data_queue.qsize()}")
+                
+                # Start the processing thread if not already running
+                if not hasattr(self, 'processor_thread') or not self.processor_thread.is_alive():
+                    self.processor_thread = threading.Thread(target=self.process_data_loop, name="Processor")
+                    self.processor_thread.daemon = True
+                    self.processor_thread.start()
+                    print("Started prediction processing thread.")
+            except queue.Full:
+                # Queue is full, skip this window
+                print("Queue full, skipping this window")
+    
+    def process_data_loop(self):
+        """Main loop for processing data and making predictions"""
+        print("Processing thread started.")
+        print(f"Using model: {self.model.__class__.__name__}")
+        print(f"Confidence threshold: {self.confidence_threshold}")
+        print(f"Window size: {self.window_size}")
+        
+        while self.running:
+            try:
+                # Get data from queue with timeout
+                try:
+                    # Block for a short time to wait for data
+                    window_data = self.data_queue.get(timeout=0.1)
+                    print("\n*** Got data from queue for prediction ***")
+                except queue.Empty:
+                    if not self.running:
+                        break
+                    continue  # skip to next iteration
+
+                # Process data based on model type
+                if self.model_type == 'scalogram':
+                    # window_data: (5, window, 6)
+                    window_data = np.array(window_data)
+                    grid_img = make_scalogram_grid(window_data)  # (H, W, 3)
+                    img_pil = Image.fromarray((grid_img*255).astype(np.uint8))
+                    img_pil = img_pil.resize((128, 128))
+                    img_arr = np.array(img_pil).astype(np.float32) / 255.0
+                    img_arr = (img_arr - 0.5) / 0.5  # Normalize to [-1, 1]
+                    img_arr = np.transpose(img_arr, (2, 0, 1))  # (3, H, W)
+                    img_tensor = torch.tensor(img_arr).unsqueeze(0)  # (1, 3, H, W)
+                    with torch.no_grad():
+                        logits = self.model(img_tensor)
+                        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                        pred_idx = int(np.argmax(probs))
+                        confidence = float(probs[pred_idx])
+                        self.last_probs = probs  # Store for visualization
+                else:
+                    # Raw signal model
+                    window_data = np.array(window_data)
+                    window_tensor = torch.tensor(window_data, dtype=torch.float32).unsqueeze(0)  # (1, 5, window, 6)
+                    window_tensor = window_tensor.permute(0, 3, 1, 2).contiguous()  # (1, 6, 5, window)
+                    window_tensor = window_tensor.unsqueeze(2)  # (1, 6, 1, 5, window)
+                    with torch.no_grad():
+                        logits = self.model(window_tensor)
+                        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                        pred_idx = int(np.argmax(probs))
+                        confidence = float(probs[pred_idx])
+                        self.last_probs = probs  # Store for visualization
+                
+                # Update GUI with prediction
+                if confidence >= self.confidence_threshold:
+                    letter = self.class_names[pred_idx]
+                    print(f"Prediction: {letter} (Confidence: {confidence:.2f})")
+                    if self.gui:
+                        self.gui.update_prediction(letter, confidence)
+                else:
+                    print(f"Prediction below threshold: {self.class_names[pred_idx]} ({confidence:.2f})")
+                    
+            except Exception as e:
+                if self.running:
+                    print(f"Error in processing loop: {e}")
+                    import traceback
+                    traceback.print_exc()
+                time.sleep(0.1) # Avoid tight loop on error
+        print("Processing thread finished.")
 
 if __name__ == "__main__":
     print("\n===== Starting ASL Classifier GUI =====\n")
