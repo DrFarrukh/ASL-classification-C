@@ -12,8 +12,61 @@ import os
 from collections import deque
 import tkinter as tk
 from tkinter import ttk, font
+import pywt
+from PIL import Image
+from matplotlib.colors import Normalize
 
-# --- Raw Signal Model definition ---
+# --- Scalogram Model definition ---
+class SimpleJetsonCNN(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 16, 3, stride=2, padding=1), nn.BatchNorm2d(16), nn.ReLU(),
+            nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.BatchNorm2d(128), nn.ReLU(),
+        )
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(128, num_classes)
+        )
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
+
+# --- Utility: Generate RGB scalogram for 3-axis data ---
+def rgb_scalogram_3axis(sig_x, sig_y, sig_z, scales=np.arange(1,31), wavelet='morl'):
+    rgb = np.zeros((len(scales), sig_x.shape[0], 3))
+    for i, sig in enumerate([sig_x, sig_y, sig_z]):
+        cwtmatr, _ = pywt.cwt(sig, scales, wavelet)
+        norm = Normalize()(np.abs(cwtmatr))
+        rgb[..., i] = norm
+    rgb = rgb / np.max(rgb) if np.max(rgb) > 0 else rgb
+    return rgb
+
+# --- Generate 2x5 grid scalogram image from sample ---
+def make_scalogram_grid(sample):
+    SCALES = np.arange(1, 31)
+    WAVELET = 'morl'
+    row_gyro = []
+    row_acc = []
+    for sensor_idx in range(5):
+        sensor_data = sample[sensor_idx]  # (window, 6)
+        # Gyro (0,1,2)
+        rgb_gyro = rgb_scalogram_3axis(sensor_data[:,0], sensor_data[:,1], sensor_data[:,2], SCALES, WAVELET)
+        row_gyro.append(rgb_gyro)
+        # Acc (3,4,5)
+        rgb_acc = rgb_scalogram_3axis(sensor_data[:,3], sensor_data[:,4], sensor_data[:,5], SCALES, WAVELET)
+        row_acc.append(rgb_acc)
+    grid_row1 = np.concatenate(row_gyro, axis=1)
+    grid_row2 = np.concatenate(row_acc, axis=1)
+    grid_img = np.concatenate([grid_row1, grid_row2], axis=0)  # (2*scales, 5*window, 3)
+    return grid_img
+
+# --- END scalogram utilities ---
+
 class RawSignalCNN(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
@@ -156,7 +209,7 @@ class ASLClassifierGUI:
         
         # Set up periodic UI update
         self.master.after(100, self.check_queue)
-    
+
     def update_prediction(self, letter, confidence):
         """Update the UI with a new prediction"""
         # Update letter
@@ -203,59 +256,59 @@ class ASLClassifierGUI:
         self.master.after(100, self.check_queue)
 
 class SensorDataProcessor:
-    def __init__(self, model_path, window_size=30, confidence_threshold=0.3, use_jit=True, gui=None):
+    def __init__(self, model_path, window_size=30, confidence_threshold=0.3, use_jit=True, gui=None, model_type='raw'):
         self.window_size = window_size
         self.confidence_threshold = confidence_threshold
         self.num_classes = 27
         self.class_names = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','Rest','S','T','U','V','W','X','Y','Z']
         self.gui = gui
+        self.model_type = model_type
         
         print(f"\nInitializing SensorDataProcessor with:")
         print(f"  Window size: {window_size}")
         print(f"  Confidence threshold: {confidence_threshold}")
-        print(f"  Use JIT: {use_jit}")
+        print(f"  Model type: {model_type}")
         
         if self.gui:
-            self.gui.update_status("Initializing sensor processor...", "yellow")
-
-        # Initialize data buffers for each sensor
-        self.sensor_buffers = [deque(maxlen=window_size) for _ in range(5)]
-        self.data_queue = queue.Queue()
-        self.running = True
-        self.last_prediction = None
-        self.last_confidence = 0.0
-        self.last_report_time = 0 # Initialize last report time
-        
-        # For tracking predictions
-        self.recent_predictions = []
-        self.recent_confidences = []
+            self.gui.update_status("Initializing model...", "yellow")
 
         # Load model
-        print(f"Loading model from {model_path}...")
-        if self.gui:
-            self.gui.update_status(f"Loading model from {model_path}...", "yellow")
-            
-        # Construct potential JIT model path
-        model_jit_path = model_path.replace('.pth', '_jit.pt')
-        if use_jit and os.path.exists(model_jit_path):
+        if self.model_type == 'scalogram':
+            print(f"Loading scalogram model from {model_path}...")
+            self.model = SimpleJetsonCNN(num_classes=self.num_classes)
             try:
-                self.model = torch.jit.load(model_jit_path)
-                print(f"Successfully loaded JIT model from {model_jit_path}")
+                if not os.path.exists(model_path):
+                    print(f"Error: Model file not found at {model_path}")
+                    if self.gui:
+                        self.gui.update_status(f"Error: Model file not found!", "red")
+                    sys.exit(1)
+                self.model.load_state_dict(torch.load(model_path, map_location='cpu'))
+                print(f"Successfully loaded scalogram model from {model_path}")
                 if self.gui:
-                    self.gui.update_status(f"Loaded JIT model", "green")
+                    self.gui.update_status(f"Loaded scalogram model", "green")
             except Exception as e:
-                print(f"Failed to load JIT model from {model_jit_path}: {e}")
-                print("Falling back to regular model loading...")
+                print(f"Error loading model state dict from {model_path}: {e}")
                 if self.gui:
-                    self.gui.update_status(f"JIT model load failed, trying regular model", "yellow")
-                self.model = self._load_regular_model(model_path)
+                    self.gui.update_status(f"Error loading model: {e}", "red")
+                sys.exit(1)
         else:
-            if use_jit:
-                 print(f"JIT model not found at {model_jit_path}. Loading regular model.")
-            else:
-                 print("JIT model not requested. Loading regular model.")
-            self.model = self._load_regular_model(model_path)
-
+            print(f"Loading raw signal model from {model_path}...")
+            self.model = RawSignalCNN(num_classes=self.num_classes)
+            try:
+                if not os.path.exists(model_path):
+                    print(f"Error: Model file not found at {model_path}")
+                    if self.gui:
+                        self.gui.update_status(f"Error: Model file not found!", "red")
+                    sys.exit(1)
+                self.model.load_state_dict(torch.load(model_path, map_location='cpu'))
+                print(f"Successfully loaded raw signal model from {model_path}")
+                if self.gui:
+                    self.gui.update_status(f"Loaded raw signal model", "green")
+            except Exception as e:
+                print(f"Error loading model state dict from {model_path}: {e}")
+                if self.gui:
+                    self.gui.update_status(f"Error loading model: {e}", "red")
+                sys.exit(1)
         self.model.eval()
         print("Model loaded and ready for inference")
         if self.gui:
@@ -266,19 +319,19 @@ class SensorDataProcessor:
         try:
             # Check if the regular model file exists
             if not os.path.exists(model_path):
-                 print(f"Error: Model file not found at {model_path}")
-                 if self.gui:
-                     self.gui.update_status(f"Error: Model file not found!", "red")
-                 sys.exit(1)
+                print(f"Error: Model file not found at {model_path}")
+                if self.gui:
+                    self.gui.update_status(f"Error: Model file not found!", "red")
+                sys.exit(1)
             model.load_state_dict(torch.load(model_path, map_location='cpu'))
             print(f"Successfully loaded regular model from {model_path}")
             if self.gui:
                 self.gui.update_status(f"Loaded regular model", "green")
         except Exception as e:
-             print(f"Error loading model state dict from {model_path}: {e}")
-             if self.gui:
-                 self.gui.update_status(f"Error loading model: {e}", "red")
-             sys.exit(1)
+            print(f"Error loading model state dict from {model_path}: {e}")
+            if self.gui:
+                self.gui.update_status(f"Error loading model: {e}", "red")
+            sys.exit(1)
         return model
 
     def start_c_process(self, i2c_device="/dev/i2c-1"):
