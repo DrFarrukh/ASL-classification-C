@@ -194,3 +194,80 @@ If you want to use a different model:
 - This project uses the PyTorch deep learning framework
 - The MPU6050 sensor interface is based on the I2C protocol
 - Special thanks to the NVIDIA Jetson community for Docker support
+
+### GUI
+
+- **Real-time Processing**: Performs real-time signal processing (windowing, normalization) and feature extraction (scalograms if using the scalogram model).
+- **Model Inference**: Loads a pre-trained PyTorch model (`.pth` or `.pt`) for either raw signals or scalograms and performs inference on incoming data windows.
+- **GUI**: Provides a user-friendly Tkinter interface displaying:
+  - The currently predicted ASL letter.
+  - Confidence score for the prediction.
+  - A bar chart of probabilities for all classes.
+  - A history log of predictions.
+  - **A dedicated canvas for visualizing the generated scalogram grid (when using `--model-type scalogram`), using the same standardized method as other analysis scripts.**
+- **Sensor Reading**: Communicates with the C program (`NEW_C`) via standard output to get sensor readings.
+- **Configuration**: Supports command-line arguments for model path, model type, **window size (default 91)**, confidence threshold, and I2C device.
+
+### Visualization & Testing Tools
+
+- **`basic_scalogram.py`**: A simplified Tkinter-based viewer focusing purely on visualizing the 5-sensor data as a scalogram grid. Imports `pywt` and `PIL` if available.
+- **`simple_viewer.py`**: A minimal Tkinter viewer that prints raw sensor values and provides a basic line plot visualization without complex processing or dependencies.
+- **`scalogram_viewer.py`**: A standalone Tkinter tool dedicated to visualizing scalograms generated from live sensor data or test data. It shows both the full 2x5 grid and individual sensor scalograms.
+- **`csv_scalogram_test.py`**: A script to load sensor data from a CSV file and visualize it using the `basic_scalogram.py` viewer logic.
+- **`csv_scalogram_exact.py`**: **A script to load sensor data from a CSV file and visualize the scalogram grid using the *exact* same generation method (`rgb_scalogram_3axis`, `make_scalogram_grid`) employed by `stream_real_data.py` and the GUI (`realtime_classifier_gui.py` when `--model-type scalogram`). Useful for verifying data format and visualization consistency.**
+
+### Running the GUI Classifier
+
+1.  **Ensure the C program is running** and printing data to stdout.
+2.  Run the Python script, specifying the model path and type:
+
+    ```bash
+    # Example for Raw Signal Model
+    python3 realtime_classifier_gui.py --model best_rawsignal_cnn.pth --model-type raw --window 91
+
+    # Example for Scalogram Model (requires a scalogram-trained model)
+    python3 realtime_classifier_gui.py --model best_scalogram_cnn.pth --model-type scalogram --window 91
+    ```
+
+    *   Replace `best_rawsignal_cnn.pth` or `best_scalogram_cnn.pth` with the actual path to your trained model.
+    *   The `--window` argument should generally match the window size used during model training (default is now 91).
+    *   Use `--model-type raw` for models trained on raw signals (like `RawSignalCNN`).
+    *   Use `--model-type scalogram` for models trained on scalogram images (like `SimpleJetsonCNN`).
+
+### Running Offline Analysis (`stream_real_data.py`)
+
+This script simulates real-time processing using pre-recorded data.
+
+```bash
+python3 stream_real_data.py --data path/to/your_data.csv --model path/to/your_model.pth --mode [raw|scalogram] --window 91
+```
+
+### Running Visualization Tools
+
+- **Simple Viewer**:
+  ```bash
+  # Pipe C program output to the viewer
+  ./NEW_C | python3 simple_viewer.py
+  # Or run in test mode (generates synthetic data)
+  python3 simple_viewer.py --test
+  ```
+- **Basic Scalogram Viewer**:
+  ```bash
+  ./NEW_C | python3 basic_scalogram.py --window 91
+  python3 basic_scalogram.py --test --window 91
+  ```
+- **Dedicated Scalogram Viewer**:
+  ```bash
+  ./NEW_C | python3 scalogram_viewer.py --window 91
+  python3 scalogram_viewer.py --test --window 91
+  ```
+- **CSV Scalogram Test (Basic)**:
+  ```bash
+  python3 csv_scalogram_test.py path/to/data.csv --window 91
+  ```
+- **CSV Scalogram Test (Exact Method)**:
+  ```bash
+  python3 csv_scalogram_exact.py path/to/data.csv --window 91
+  # Optionally save images
+  python3 csv_scalogram_exact.py path/to/data.csv --window 91 --save
+  ```

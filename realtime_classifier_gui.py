@@ -13,10 +13,10 @@ from collections import deque
 import tkinter as tk
 from tkinter import ttk, font, Canvas
 import pywt
-from PIL import Image, ImageTk
 from matplotlib.colors import Normalize
 import matplotlib.pyplot as plt
 from io import BytesIO
+from PIL import Image, ImageTk
 
 # --- Scalogram Model definition ---
 class SimpleJetsonCNN(nn.Module):
@@ -221,7 +221,7 @@ class ASLClassifierGUI:
         # Set up periodic UI update
         self.master.after(100, self.check_queue)
 
-    def update_prediction(self, letter, confidence, scalogram_img=None):
+    def update_prediction(self, letter, confidence, scalogram_data=None):
         """Update the UI with a new prediction"""
         # Update letter
         self.letter_label.config(text=letter)
@@ -257,33 +257,41 @@ class ASLClassifierGUI:
         self.history_text.config(state=tk.DISABLED)
         
         # Update scalogram visualization if provided
-        if scalogram_img is not None:
-            self.update_scalogram(scalogram_img)
+        if scalogram_data is not None:
+            self.update_scalogram(scalogram_data)
             
-    def update_scalogram(self, grid_img):
+    def update_scalogram(self, scalogram_data):
         """Update the scalogram visualization"""
         try:
-            # Convert numpy array to PIL Image
-            if isinstance(grid_img, np.ndarray):
-                # Scale to 0-255 range for display
-                img_arr = (grid_img * 255).astype(np.uint8)
-                img = Image.fromarray(img_arr)
-                
-                # Resize to fit canvas
-                canvas_width = self.viz_canvas.winfo_width() or 300
-                canvas_height = self.viz_canvas.winfo_height() or 150
-                img = img.resize((canvas_width, canvas_height), Image.LANCZOS)
-                
-                # Convert to PhotoImage for Tkinter
-                photo = ImageTk.PhotoImage(img)
-                
-                # Update canvas
+            # scalogram_data is the grid_img (H, W, 3) numpy array (0-1 float)
+            img_pil = Image.fromarray((scalogram_data * 255).astype(np.uint8))
+
+            # Get canvas size and resize image to fit (maintaining aspect ratio)
+            canvas_width = self.viz_canvas.winfo_width()
+            canvas_height = self.viz_canvas.winfo_height()
+            if canvas_width > 1 and canvas_height > 1:
+                img_pil.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS)
+
+                # Convert PIL image to PhotoImage for Tkinter
+                self.scalogram_photo = ImageTk.PhotoImage(img_pil)
+
+                # Clear previous image and display new one
                 self.viz_canvas.delete("all")
-                self.viz_canvas.create_image(0, 0, anchor=tk.NW, image=photo)
-                self.viz_canvas.image = photo  # Keep reference to prevent garbage collection
+                self.viz_canvas.create_image(canvas_width // 2, canvas_height // 2, 
+                                               anchor='center', image=self.scalogram_photo)
+            else:
+                # Canvas might not be ready on first update
+                print("Scalogram canvas not ready yet for size info.")
+
         except Exception as e:
-            print(f"Error updating scalogram: {e}")
-    
+            print(f"Error updating scalogram visualization: {e}")
+            # Optionally clear canvas on error
+            self.viz_canvas.delete("all")
+        else:
+             # Clear canvas if not scalogram mode or no data
+             self.viz_canvas.delete("all")
+
+
     def update_status(self, status, color='white'):
         """Update the status message"""
         self.status_label.config(text=f"Status: {status}", fg=color)
@@ -550,41 +558,39 @@ class SensorDataProcessor:
 
                 # Process data based on model type
                 if self.model_type == 'scalogram':
-                    # window_data: (5, window, 6)
-                    window_data = np.array(window_data)
-                    grid_img = make_scalogram_grid(window_data)  # (H, W, 3)
-                    img_pil = Image.fromarray((grid_img*255).astype(np.uint8))
-                    img_pil = img_pil.resize((128, 128))
+                    # Generate scalogram grid using the exact method
+                    # Input data shape: (5, window_size, 6)
+                    grid_img = make_scalogram_grid(window_data) # (H, W, 3) float 0-1
+                    self.last_scalogram = grid_img # Store for visualization
+
+                    # Prepare input tensor for SimpleJetsonCNN (like in stream_real_data.py)
+                    img_pil = Image.fromarray((grid_img * 255).astype(np.uint8))
+                    img_pil = img_pil.resize((128, 128)) # Resize to model input size
                     img_arr = np.array(img_pil).astype(np.float32) / 255.0
-                    img_arr = (img_arr - 0.5) / 0.5  # Normalize to [-1, 1]
+                    img_arr = (img_arr - 0.5) / 0.5 # Normalize like ImageNet
                     img_arr = np.transpose(img_arr, (2, 0, 1))  # (3, H, W)
-                    img_tensor = torch.tensor(img_arr).unsqueeze(0)  # (1, 3, H, W)
-                    with torch.no_grad():
-                        logits = self.model(img_tensor)
-                        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-                        pred_idx = int(np.argmax(probs))
-                        confidence = float(probs[pred_idx])
-                        self.last_probs = probs  # Store for visualization
+                    input_tensor = torch.tensor(img_arr).unsqueeze(0) # (1, 3, H, W)
                 else:
                     # Raw signal model
                     window_data = np.array(window_data)
                     window_tensor = torch.tensor(window_data, dtype=torch.float32).unsqueeze(0)  # (1, 5, window, 6)
                     window_tensor = window_tensor.permute(0, 3, 1, 2).contiguous()  # (1, 6, 5, window)
                     window_tensor = window_tensor.unsqueeze(2)  # (1, 6, 1, 5, window)
-                    with torch.no_grad():
-                        logits = self.model(window_tensor)
-                        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-                        pred_idx = int(np.argmax(probs))
-                        confidence = float(probs[pred_idx])
-                        self.last_probs = probs  # Store for visualization
+                    input_tensor = window_tensor
                 
                 # Always update GUI with prediction regardless of confidence
+                with torch.no_grad():
+                    logits = self.model(input_tensor)
+                    probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                    pred_idx = int(np.argmax(probs))
+                    confidence = float(probs[pred_idx])
+                    self.last_probs = probs  # Store for visualization
+                
                 letter = self.class_names[pred_idx]
                 print(f"Prediction: {letter} (Confidence: {confidence:.2f})")
                 if self.gui:
                     # Store the scalogram for visualization
                     if self.model_type == 'scalogram':
-                        self.last_scalogram = grid_img
                         self.gui.update_prediction(letter, confidence, grid_img)
                     else:
                         # For raw signal model, we can still visualize the raw data
@@ -602,11 +608,10 @@ class SensorDataProcessor:
 if __name__ == "__main__":
     print("\n===== Starting ASL Classifier GUI =====\n")
     parser = argparse.ArgumentParser(description="Real-time ASL classification GUI")
-    parser.add_argument('--model', type=str, default="best_rawsignal_cnn.pth",
-                        help="Path to model .pth file (raw or scalogram)")
+    parser.add_argument('--model', type=str, required=True, help="Path to trained model (.pth or .pt)")
     parser.add_argument('--model-type', type=str, default="raw", choices=["raw", "scalogram"],
                         help="Type of model to use: 'raw' for RawSignalCNN, 'scalogram' for SimpleJetsonCNN")
-    parser.add_argument('--window', type=int, default=30,
+    parser.add_argument('--window', type=int, default=91,
                         help="Window size (samples)")
     parser.add_argument('--threshold', type=float, default=0.3,
                         help="Confidence threshold for predictions")
