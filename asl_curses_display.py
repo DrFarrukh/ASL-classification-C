@@ -219,6 +219,9 @@ class SensorDataProcessor:
                 # Check if we have enough data for inference (moved outside parsing try-except)
                 self._check_and_process_data()
 
+                # Slow down: 90 samples in 5 seconds ≈ 0.055 sec/sample
+                time.sleep(0.055)
+
             except Exception as e:
                 # Catch unexpected errors during the read/process loop
                 if self.running: # Avoid printing errors during shutdown
