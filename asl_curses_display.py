@@ -220,6 +220,7 @@ class SensorDataProcessor:
 
                 # Check if we have enough data for inference (moved outside parsing try-except)
                 self._check_and_process_data()
+                self.log("[DEBUG] _read_process_output: called _check_and_process_data()")
 
                 # Slow down: 90 samples in 5 seconds ≈ 0.055 sec/sample
                 # time.sleep(0.055)
@@ -375,6 +376,8 @@ class SensorDataProcessor:
         
         while self.running:
             try:
+                # DEBUG: Log that we're about to check the queue
+                self.log("[DEBUG] process_data_loop: waiting for data in queue...")
                 # Always update the display periodically if we have predictions
                 current_time = time.time()
                 if self.recent_predictions and current_time - last_display_update > update_interval:
