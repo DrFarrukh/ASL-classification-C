@@ -68,11 +68,30 @@ DOCKER_DIR=$(dirname "$DOCKER_SCRIPT_PATH")
 JETSON_INFERENCE_DIR=$(dirname "$DOCKER_DIR")
 cd "$JETSON_INFERENCE_DIR"
 
-# Run the Docker container
-# The dusty-nv script expects the command as the last argument without any flag
-"$DOCKER_SCRIPT_PATH" \
-    --volume "$ASL_DIR:/asl" \
-    "cd /asl && python3 realtime_classifier.py --use-jit"
+# Since the dusty-nv script doesn't properly pass I2C devices, we'll use our direct approach
+# instead of relying on the dusty-nv script
+
+echo "Running Docker container directly with I2C device access..."
+
+# Create temporary file for Jetson model info
+cat /proc/device-tree/model > /tmp/nv_jetson_model 2>/dev/null || echo "Not a Jetson device" > /tmp/nv_jetson_model
+
+# Run the Docker container with full GPU access and system mounts
+sudo docker run --runtime nvidia -it --rm \
+    --network host \
+    --device /dev/i2c-0 \
+    --device /dev/i2c-1 \
+    --device /dev/i2c-2 \
+    -v /tmp/argus_socket:/tmp/argus_socket \
+    -v /etc/enctune.conf:/etc/enctune.conf \
+    -v /etc/nv_tegra_release:/etc/nv_tegra_release \
+    -v /tmp/nv_jetson_model:/tmp/nv_jetson_model \
+    -v /var/run/dbus:/var/run/dbus \
+    -v /var/run/avahi-daemon/socket:/var/run/avahi-daemon/socket \
+    -v "$ASL_DIR:/asl" \
+    -w /asl \
+    dustynv/jetson-inference:r32.7.1 \
+    bash -c "cd /asl && python3 realtime_classifier.py --use-jit"
 
 # Return to the original directory
 cd "$ASL_DIR"
