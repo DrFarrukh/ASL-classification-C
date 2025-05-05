@@ -71,9 +71,7 @@ cd "$JETSON_INFERENCE_DIR"
 # Run the Docker container
 "$DOCKER_SCRIPT_PATH" \
     --volume "$ASL_DIR:/asl" \
-    --device /dev/i2c-1 \
-    --device /dev/i2c-0 \
-    "cd /asl && ls -la && python3 realtime_classifier.py --use-jit"
+    --workdir /asl
 
 # Return to the original directory
 cd "$ASL_DIR"
