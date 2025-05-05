@@ -17,13 +17,30 @@ from matplotlib.colors import Normalize
 
 # --- Utility: Generate RGB scalogram for 3-axis data ---
 def rgb_scalogram_3axis(sig_x, sig_y, sig_z, scales=np.arange(1,31), wavelet='morl'):
-    rgb = np.zeros((len(scales), sig_x.shape[0], 3))
-    for i, sig in enumerate([sig_x, sig_y, sig_z]):
-        cwtmatr, _ = pywt.cwt(sig, scales, wavelet)
-        norm = Normalize()(np.abs(cwtmatr))
-        rgb[..., i] = norm
-    rgb = rgb / np.max(rgb) if np.max(rgb) > 0 else rgb
-    return rgb
+    try:
+        rgb = np.zeros((len(scales), sig_x.shape[0], 3))
+        for i, sig in enumerate([sig_x, sig_y, sig_z]):
+            cwtmatr, _ = pywt.cwt(sig, scales, wavelet)
+            # Normalize the continuous wavelet transform
+            abs_data = np.abs(cwtmatr)
+            if np.max(abs_data) > 0:  # Avoid division by zero
+                norm_data = abs_data / np.max(abs_data)
+            else:
+                norm_data = abs_data
+            rgb[..., i] = norm_data
+        
+        # Ensure the RGB values are in the range [0, 1]
+        if np.max(rgb) > 0:  # Avoid division by zero
+            rgb = rgb / np.max(rgb)
+        
+        print(f"Generated RGB scalogram with shape {rgb.shape}, min: {np.min(rgb)}, max: {np.max(rgb)}")
+        return rgb
+    except Exception as e:
+        print(f"Error in rgb_scalogram_3axis: {e}")
+        # Return a default colored image if there's an error
+        default_rgb = np.zeros((len(scales), sig_x.shape[0], 3))
+        default_rgb[..., 0] = 0.5  # Red channel
+        return default_rgb
 
 # --- Generate 2x5 grid scalogram image from sample ---
 def make_scalogram_grid(sample):
@@ -133,22 +150,30 @@ class ScalogramViewer:
     def update_visualization(self):
         """Update the scalogram visualization with current data"""
         try:
-            # Check if we have data
-            if not all(len(buffer) > 0 for buffer in self.sensor_buffers):
+            # Print buffer sizes for debugging
+            buffer_sizes = [len(buffer) for buffer in self.sensor_buffers]
+            print(f"Buffer sizes: {buffer_sizes}")
+            
+            # Check if we have any data at all
+            if all(len(buffer) == 0 for buffer in self.sensor_buffers):
+                print("No data in buffers yet")
                 return
                 
             # Fill any empty buffers with zeros
             for i, buffer in enumerate(self.sensor_buffers):
                 if len(buffer) < self.window_size:
                     zeros_needed = self.window_size - len(buffer)
+                    print(f"Filling sensor {i} buffer with {zeros_needed} zero entries")
                     for _ in range(zeros_needed):
                         buffer.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             
             # Create window data
             window_data = np.array([list(buffer) for buffer in self.sensor_buffers])
+            print(f"Window data shape: {window_data.shape}")
             
             # Generate scalogram grid
             grid_img = make_scalogram_grid(window_data)
+            print(f"Grid image shape: {grid_img.shape}, min: {np.min(grid_img)}, max: {np.max(grid_img)}")
             
             # Update main visualization
             self._update_canvas(self.viz_canvas, grid_img)
@@ -169,13 +194,30 @@ class ScalogramViewer:
     def _update_canvas(self, canvas, img_data):
         """Update a canvas with an image"""
         try:
-            # Convert numpy array to PIL Image
-            img_arr = (img_data * 255).astype(np.uint8)
-            img = Image.fromarray(img_arr)
+            # Make sure we have valid data
+            if img_data.size == 0:
+                print("Empty image data")
+                return
+                
+            # Ensure we have a 3D RGB array
+            if len(img_data.shape) != 3 or img_data.shape[2] != 3:
+                print(f"Invalid image shape: {img_data.shape}")
+                return
+                
+            # Scale to 0-255 range for display
+            img_arr = np.clip(img_data * 255.0, 0, 255).astype(np.uint8)
+            
+            # Convert to PIL Image
+            try:
+                img = Image.fromarray(img_arr)
+                print(f"Created PIL image: {img.size}, mode: {img.mode}")
+            except Exception as e:
+                print(f"Error creating PIL image: {e}, shape: {img_arr.shape}, dtype: {img_arr.dtype}")
+                return
             
             # Resize to fit canvas
-            canvas_width = canvas.winfo_width()
-            canvas_height = canvas.winfo_height()
+            canvas_width = canvas.winfo_width() or 300
+            canvas_height = canvas.winfo_height() or 150
             if canvas_width > 1 and canvas_height > 1:  # Ensure valid dimensions
                 img = img.resize((canvas_width, canvas_height), Image.LANCZOS)
                 
@@ -186,6 +228,7 @@ class ScalogramViewer:
                 canvas.delete("all")
                 canvas.create_image(0, 0, anchor=tk.NW, image=photo)
                 canvas.image = photo  # Keep reference to prevent garbage collection
+                print(f"Updated canvas with image of size {img.size}")
         except Exception as e:
             print(f"Error updating canvas: {e}")
 
@@ -270,17 +313,21 @@ class SensorDataProcessor:
                         print(f"C output: {line}")  # Debug print
                         
                         # Try different formats of C output
-                        if "Raw C Output:" in line:
-                            # Format: "Raw C Output: <sensor_idx> <gx> <gy> <gz> <ax> <ay> <az>"
-                            parts = line.split()
-                            if len(parts) >= 8:
-                                sensor_idx = int(parts[3])
-                                gx = float(parts[4])
-                                gy = float(parts[5])
-                                gz = float(parts[6])
-                                ax = float(parts[7])
-                                ay = float(parts[8]) if len(parts) > 8 else 0
-                                az = float(parts[9]) if len(parts) > 9 else 0
+                        # Direct format: "<sensor_idx> <gx> <gy> <gz> <ax> <ay> <az>"
+                        parts = line.split()
+                        if len(parts) >= 7 and parts[0].isdigit():
+                            try:
+                                sensor_idx = int(parts[0])
+                                gx = float(parts[1])
+                                gy = float(parts[2])
+                                gz = float(parts[3])
+                                ax = float(parts[4])
+                                ay = float(parts[5])
+                                az = float(parts[6])
+                                print(f"Direct format: sensor {sensor_idx}: {gx}, {gy}, {gz}, {ax}, {ay}, {az}")
+                            except ValueError:
+                                print(f"Failed to parse direct format: {line}")
+                                continue
                                 
                                 print(f"Parsed sensor {sensor_idx}: gx={gx}, gy={gy}, gz={gz}, ax={ax}, ay={ay}, az={az}")  # Debug print
                                 
@@ -322,10 +369,14 @@ def main():
                         help="I2C device path for sensor reading")
     parser.add_argument('--debug', action='store_true',
                         help="Enable additional debug output")
+    parser.add_argument('--test', action='store_true',
+                        help="Run with test data instead of sensor data")
     args = parser.parse_args()
     
     print(f"Window size: {args.window}")
     print(f"I2C device: {args.i2c}")
+    print(f"Debug mode: {args.debug}")
+    print(f"Test mode: {args.test}")
     
     try:
         print("Creating Tkinter root window...")
@@ -333,21 +384,52 @@ def main():
         print("Creating GUI...")
         gui = ScalogramViewer(root)
         
-        print("Initializing sensor data processor...")
-        processor = SensorDataProcessor(
-            window_size=args.window,
-            gui=gui
-        )
-        
-        print("Starting C process for sensor reading...")
-        processor.start_c_process(i2c_device=args.i2c)
-        
-        # Set up periodic UI update
-        def update_ui():
-            gui.update_visualization()
+        if args.test:
+            # Generate test data
+            print("Generating test data...")
+            for sensor_idx in range(5):
+                for i in range(args.window):
+                    # Generate sine waves with different frequencies
+                    t = i / args.window * 2 * np.pi
+                    gx = np.sin(t * (sensor_idx + 1))
+                    gy = np.cos(t * (sensor_idx + 1))
+                    gz = np.sin(t * (sensor_idx + 1) + np.pi/4)
+                    ax = np.cos(t * (sensor_idx + 1) + np.pi/3)
+                    ay = np.sin(t * (sensor_idx + 1) + np.pi/2)
+                    az = np.cos(t * (sensor_idx + 1) + np.pi/6)
+                    
+                    # Scale to realistic values
+                    gx *= 500
+                    gy *= 500
+                    gz *= 500
+                    ax *= 15000
+                    ay *= 15000
+                    az *= 15000
+                    
+                    gui.sensor_buffers[sensor_idx].append([gx, gy, gz, ax, ay, az])
+            
+            # Set up periodic UI update only
+            def update_ui():
+                gui.update_visualization()
+                root.after(100, update_ui)
+            
             root.after(100, update_ui)
-        
-        root.after(100, update_ui)
+        else:
+            print("Initializing sensor data processor...")
+            processor = SensorDataProcessor(
+                window_size=args.window,
+                gui=gui
+            )
+            
+            print("Starting C process for sensor reading...")
+            processor.start_c_process(i2c_device=args.i2c)
+            
+            # Set up periodic UI update
+            def update_ui():
+                gui.update_visualization()
+                root.after(100, update_ui)
+            
+            root.after(100, update_ui)
         
         print("Starting GUI main loop...")
         root.mainloop()
