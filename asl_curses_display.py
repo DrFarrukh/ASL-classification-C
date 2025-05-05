@@ -36,6 +36,8 @@ class RawSignalCNN(nn.Module):
 
 class SensorDataProcessor:
     def __init__(self, model_path, window_size=91, confidence_threshold=0.3, use_jit=True, stdscr=None):
+        self.display_thread = None
+        self._display_thread_running = False
         self.window_size = window_size
         self.confidence_threshold = confidence_threshold
         self.num_classes = 27
@@ -442,6 +444,21 @@ class SensorDataProcessor:
                 time.sleep(0.1) # Avoid tight loop on error
         self.log("Processing thread finished.")
 
+    def _display_refresh_loop(self):
+        # Periodically refresh the curses display every 200ms
+        while self._display_thread_running:
+            try:
+                # Only update if curses is active
+                if self.stdscr:
+                    # Use last_prediction/confidence if available, else show blank/default
+                    pred_idx = self.last_prediction if self.last_prediction is not None else 0
+                    confidence = self.last_confidence if self.last_confidence is not None else 0.0
+                    self.update_display(pred_idx, confidence)
+                time.sleep(0.2)
+            except Exception as e:
+                self.log(f"Error in display refresh thread: {e}")
+                time.sleep(0.5)
+
     def start(self, i2c_device="/dev/i2c-1"):
         """Start the data collection and processing"""
         # Set up signal handler for graceful shutdown
@@ -455,6 +472,13 @@ class SensorDataProcessor:
         self.processor_thread = threading.Thread(target=self.process_data_loop, name="Processor")
         self.processor_thread.daemon = True
         self.processor_thread.start()
+
+        # Start display refresh thread if using curses
+        if self.stdscr:
+            self._display_thread_running = True
+            self.display_thread = threading.Thread(target=self._display_refresh_loop, name="DisplayRefresh")
+            self.display_thread.daemon = True
+            self.display_thread.start()
 
         self.log("Real-time classification starting. Press Ctrl+C to stop.")
 
@@ -504,36 +528,21 @@ class SensorDataProcessor:
             self.process.terminate() 
             try:
                 # Wait for a short period for graceful termination
-                self.process.wait(timeout=2.0)
-                self.log("C process terminated gracefully.")
-            except subprocess.TimeoutExpired:
-                self.log("C process did not terminate gracefully after SIGTERM, sending SIGKILL...")
-                self.process.kill() # Force kill if needed
-                try:
-                     self.process.wait(timeout=1.0) # Wait briefly for kill
-                     self.log("C process killed.")
-                except subprocess.TimeoutExpired:
-                     self.log("Warning: C process did not respond to SIGKILL.")
-            except Exception as e:
-                 self.log(f"Error during C process termination: {e}")
-        elif hasattr(self, 'process'):
-             pass # Process already finished
 
-        # Wait for threads to finish
-        self.log("Waiting for threads to finish...")
+        # Join threads
         threads_to_join = []
-        if hasattr(self, 'reader_thread') and self.reader_thread.is_alive():
-             threads_to_join.append(self.reader_thread)
-        if hasattr(self, 'stderr_thread') and self.stderr_thread.is_alive():
-             threads_to_join.append(self.stderr_thread)
-        if hasattr(self, 'processor_thread') and self.processor_thread.is_alive():
-             threads_to_join.append(self.processor_thread)
-             
+        if hasattr(self, 'processor_thread'):
+            threads_to_join.append(self.processor_thread)
+        if hasattr(self, 'reader_thread'):
+            threads_to_join.append(self.reader_thread)
+        if hasattr(self, 'stderr_thread'):
+            threads_to_join.append(self.stderr_thread)
+
         for thread in threads_to_join:
-             try:
-                  thread.join(timeout=1.5)
-             except Exception as e:
-                  self.log(f"Error joining thread {thread.name}: {e}")
+            try:
+                thread.join(timeout=1.5)
+            except Exception as e:
+                self.log(f"Error joining thread {thread.name}: {e}")
 
         self.log("Real-time classification stopped.")
         # Use os._exit(0) for a more immediate exit in case of lingering threads
