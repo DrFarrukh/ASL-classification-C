@@ -36,8 +36,6 @@ class RawSignalCNN(nn.Module):
 
 class SensorDataProcessor:
     def __init__(self, model_path, window_size=91, confidence_threshold=0.3, use_jit=True, stdscr=None):
-        self.display_thread = None
-        self._display_thread_running = False
         self.window_size = window_size
         self.confidence_threshold = confidence_threshold
         self.num_classes = 27
@@ -54,7 +52,6 @@ class SensorDataProcessor:
             curses.init_pair(4, curses.COLOR_CYAN, -1)   # Cyan for headers
             curses.init_pair(5, curses.COLOR_WHITE, -1)  # White for normal text
             self.stdscr.clear()
-            self.stdscr.nodelay(True)  # Make getch() non-blocking
             
         self.log(f"Initializing SensorDataProcessor with:")
         self.log(f"  Window size: {window_size}")
@@ -98,13 +95,8 @@ class SensorDataProcessor:
     def log(self, message):
         """Log a message to the screen or stdout"""
         if self.stdscr:
-            # Buffer logs to display in the UI instead of printing
-            if not hasattr(self, 'log_buffer'):
-                self.log_buffer = []
-            self.log_buffer.append(message)
-            # Keep only last 10 log lines
-            if len(self.log_buffer) > 10:
-                self.log_buffer = self.log_buffer[-10:]
+            # Add to a log buffer that we could display if needed
+            pass
         else:
             print(message)
 
@@ -226,10 +218,6 @@ class SensorDataProcessor:
 
                 # Check if we have enough data for inference (moved outside parsing try-except)
                 self._check_and_process_data()
-                self.log("[DEBUG] _read_process_output: called _check_and_process_data()")
-
-                # Slow down: 90 samples in 5 seconds ≈ 0.055 sec/sample
-                # time.sleep(0.055)
 
             except Exception as e:
                 # Catch unexpected errors during the read/process loop
@@ -293,17 +281,21 @@ class SensorDataProcessor:
             self.stdscr.clear()
             height, width = self.stdscr.getmaxyx()
             
-            # Title and time on the same line
+            # Title
             title = "ASL CLASSIFIER"
+            self.stdscr.addstr(1, (width - len(title)) // 2, title, curses.color_pair(4) | curses.A_BOLD)
+            
+            # Current time
             time_str = time.strftime("%H:%M:%S")
-            self.stdscr.addstr(0, 2, title, curses.color_pair(4) | curses.A_BOLD)
-            self.stdscr.addstr(0, width - len(time_str) - 2, time_str, curses.color_pair(5))
+            self.stdscr.addstr(1, width - len(time_str) - 2, time_str, curses.color_pair(5))
             
             # Divider
-            self.stdscr.addstr(1, 0, "=" * (width-1), curses.color_pair(5))
+            self.stdscr.addstr(2, 0, "=" * (width-1), curses.color_pair(5))
             
-            # Current prediction (large letter) and confidence on the same line
+            # Current prediction (large letter)
             letter = self.class_names[pred_idx]
+            letter_y = 5
+            letter_x = (width - len(letter)) // 2
             
             # Choose color based on confidence
             if confidence >= 0.7:
@@ -313,29 +305,25 @@ class SensorDataProcessor:
             else:
                 color = curses.color_pair(3)  # Red
                 
-            # Display letter and confidence on the same line
-            self.stdscr.addstr(3, 2, "PREDICTION:", curses.color_pair(5))
-            self.stdscr.addstr(3, 14, letter, color | curses.A_BOLD)
+            self.stdscr.addstr(letter_y, letter_x, letter, color | curses.A_BOLD)
             
-            # Confidence bar on the same line
+            # Confidence bar
             conf_label = "Confidence: "
-            self.stdscr.addstr(3, 20, conf_label, curses.color_pair(5))
+            self.stdscr.addstr(letter_y + 3, 2, conf_label, curses.color_pair(5))
             
-            bar_width = 30  # Fixed width to save space
+            bar_width = width - len(conf_label) - 10
             filled = int(bar_width * confidence)
             
             # Draw the bar
-            self.stdscr.addstr(3, 20 + len(conf_label), "[" + "#" * filled + "-" * (bar_width - filled) + "]", color)
+            self.stdscr.addstr(letter_y + 3, 2 + len(conf_label), "[" + "#" * filled + "-" * (bar_width - filled) + "]", color)
             
             # Confidence percentage
             conf_pct = f"{int(confidence * 100)}%"
-            self.stdscr.addstr(3, 20 + len(conf_label) + bar_width + 2, conf_pct, color)
+            self.stdscr.addstr(letter_y + 3, width - len(conf_pct) - 2, conf_pct, color)
             
-            # Recent predictions - more compact display
-            self.stdscr.addstr(5, 2, "Recent:", curses.color_pair(4))
+            # Recent predictions
+            self.stdscr.addstr(letter_y + 5, 2, "Recent Predictions:", curses.color_pair(4))
             
-            # Display recent predictions horizontally to save space
-            recent_x = 10
             for i, (idx, conf) in enumerate(zip(self.recent_predictions[-5:], self.recent_confidences[-5:])):
                 if i >= 5:  # Show at most 5 recent predictions
                     break
@@ -349,29 +337,20 @@ class SensorDataProcessor:
                     color = curses.color_pair(2)  # Yellow
                 else:
                     color = curses.color_pair(3)  # Red
+                    
+                # Create a mini bar
+                mini_width = 20
+                mini_filled = int(mini_width * conf)
+                mini_bar = "[" + "#" * mini_filled + "-" * (mini_width - mini_filled) + "]"
                 
-                # Display in compact format
-                self.stdscr.addstr(5, recent_x, f"{l}({conf:.2f})", color)
-                recent_x += len(l) + 8  # Space for next prediction
+                self.stdscr.addstr(letter_y + 6 + i, 4, f"{l} {mini_bar} {conf:.2f}", color)
             
-            # Sensor data status
-            buffer_sizes = [len(buffer) for buffer in self.sensor_buffers]
-            buffer_status = f"Sensors: {buffer_sizes[0]}/{buffer_sizes[1]}/{buffer_sizes[2]}/{buffer_sizes[3]}/{buffer_sizes[4]} of {self.window_size}"
-            self.stdscr.addstr(6, 2, buffer_status, curses.color_pair(5))
+            # Instructions
+            self.stdscr.addstr(height-2, 2, "Press 'q' to quit", curses.color_pair(5))
             
-            # Instructions at the bottom
-            # Place instructions at a fixed line to avoid scrolling
-            if height < 8:
-                self.stdscr.addstr(7 if height > 7 else height-1, 2, "[!] Terminal too small for display!", curses.color_pair(3) | curses.A_BOLD)
-            else:
-                self.stdscr.addstr(7, 2, "Press 'q' to quit", curses.color_pair(5))
-            # Show last log line for debug if available
-            if hasattr(self, 'log_buffer') and self.log_buffer:
-                log_msg = self.log_buffer[-1]
-                self.stdscr.addstr(8, 2, f"Log: {log_msg[:width-8]}", curses.color_pair(4))
             # Refresh the screen
             self.stdscr.refresh()
-
+            
         except Exception as e:
             # If there's an error updating the display, fall back to text mode
             self.stdscr = None
@@ -386,8 +365,6 @@ class SensorDataProcessor:
         
         while self.running:
             try:
-                # DEBUG: Log that we're about to check the queue
-                self.log("[DEBUG] process_data_loop: waiting for data in queue...")
                 # Always update the display periodically if we have predictions
                 current_time = time.time()
                 if self.recent_predictions and current_time - last_display_update > update_interval:
@@ -460,21 +437,6 @@ class SensorDataProcessor:
                 time.sleep(0.1) # Avoid tight loop on error
         self.log("Processing thread finished.")
 
-    def _display_refresh_loop(self):
-        # Periodically refresh the curses display every 200ms
-        while self._display_thread_running:
-            try:
-                # Only update if curses is active
-                if self.stdscr:
-                    # Use last_prediction/confidence if available, else show blank/default
-                    pred_idx = self.last_prediction if self.last_prediction is not None else 0
-                    confidence = self.last_confidence if self.last_confidence is not None else 0.0
-                    self.update_display(pred_idx, confidence)
-                time.sleep(0.2)
-            except Exception as e:
-                self.log(f"Error in display refresh thread: {e}")
-                time.sleep(0.5)
-
     def start(self, i2c_device="/dev/i2c-1"):
         """Start the data collection and processing"""
         # Set up signal handler for graceful shutdown
@@ -488,13 +450,6 @@ class SensorDataProcessor:
         self.processor_thread = threading.Thread(target=self.process_data_loop, name="Processor")
         self.processor_thread.daemon = True
         self.processor_thread.start()
-
-        # Start display refresh thread if using curses
-        if self.stdscr:
-            self._display_thread_running = True
-            self.display_thread = threading.Thread(target=self._display_refresh_loop, name="DisplayRefresh")
-            self.display_thread.daemon = True
-            self.display_thread.start()
 
         self.log("Real-time classification starting. Press Ctrl+C to stop.")
 
@@ -550,27 +505,30 @@ class SensorDataProcessor:
                 self.log("C process did not terminate gracefully after SIGTERM, sending SIGKILL...")
                 self.process.kill() # Force kill if needed
                 try:
-                    self.process.wait(timeout=1.0) # Wait briefly for kill
-                    self.log("C process killed.")
+                     self.process.wait(timeout=1.0) # Wait briefly for kill
+                     self.log("C process killed.")
                 except subprocess.TimeoutExpired:
-                    self.log("Warning: C process did not respond to SIGKILL.")
+                     self.log("Warning: C process did not respond to SIGKILL.")
             except Exception as e:
-                self.log(f"Error during C process termination: {e}")
+                 self.log(f"Error during C process termination: {e}")
+        elif hasattr(self, 'process'):
+             pass # Process already finished
 
-        # Join threads
+        # Wait for threads to finish
+        self.log("Waiting for threads to finish...")
         threads_to_join = []
-        if hasattr(self, 'processor_thread'):
-            threads_to_join.append(self.processor_thread)
-        if hasattr(self, 'reader_thread'):
-            threads_to_join.append(self.reader_thread)
-        if hasattr(self, 'stderr_thread'):
-            threads_to_join.append(self.stderr_thread)
-
+        if hasattr(self, 'reader_thread') and self.reader_thread.is_alive():
+             threads_to_join.append(self.reader_thread)
+        if hasattr(self, 'stderr_thread') and self.stderr_thread.is_alive():
+             threads_to_join.append(self.stderr_thread)
+        if hasattr(self, 'processor_thread') and self.processor_thread.is_alive():
+             threads_to_join.append(self.processor_thread)
+             
         for thread in threads_to_join:
-            try:
-                thread.join(timeout=1.5)
-            except Exception as e:
-                self.log(f"Error joining thread {thread.name}: {e}")
+             try:
+                  thread.join(timeout=1.5)
+             except Exception as e:
+                  self.log(f"Error joining thread {thread.name}: {e}")
 
         self.log("Real-time classification stopped.")
         # Use os._exit(0) for a more immediate exit in case of lingering threads
