@@ -10,8 +10,61 @@ import signal
 import sys
 import os
 from collections import deque
+import pywt
+from PIL import Image
+from matplotlib.colors import Normalize
 
-# --- Raw Signal Model definition ---
+# --- Scalogram Model definition (from stream_real_data.py) ---
+class SimpleJetsonCNN(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 16, 3, stride=2, padding=1), nn.BatchNorm2d(16), nn.ReLU(),
+            nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU(),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.BatchNorm2d(128), nn.ReLU(),
+        )
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(128, num_classes)
+        )
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
+
+# --- Utility: Generate RGB scalogram for 3-axis data ---
+def rgb_scalogram_3axis(sig_x, sig_y, sig_z, scales=np.arange(1,31), wavelet='morl'):
+    rgb = np.zeros((len(scales), sig_x.shape[0], 3))
+    for i, sig in enumerate([sig_x, sig_y, sig_z]):
+        cwtmatr, _ = pywt.cwt(sig, scales, wavelet)
+        norm = Normalize()(np.abs(cwtmatr))
+        rgb[..., i] = norm
+    rgb = rgb / np.max(rgb)
+    return rgb
+
+# --- Generate 2x5 grid scalogram image from sample ---
+def make_scalogram_grid(sample):
+    SCALES = np.arange(1, 31)
+    WAVELET = 'morl'
+    row_gyro = []
+    row_acc = []
+    for sensor_idx in range(5):
+        sensor_data = sample[sensor_idx]  # (window, 6)
+        # Gyro (0,1,2)
+        rgb_gyro = rgb_scalogram_3axis(sensor_data[:,0], sensor_data[:,1], sensor_data[:,2], SCALES, WAVELET)
+        row_gyro.append(rgb_gyro)
+        # Acc (3,4,5)
+        rgb_acc = rgb_scalogram_3axis(sensor_data[:,3], sensor_data[:,4], sensor_data[:,5], SCALES, WAVELET)
+        row_acc.append(rgb_acc)
+    grid_row1 = np.concatenate(row_gyro, axis=1)
+    grid_row2 = np.concatenate(row_acc, axis=1)
+    grid_img = np.concatenate([grid_row1, grid_row2], axis=0)  # (2*scales, 5*window, 3)
+    return grid_img
+
+# --- End scalogram utilities ---
+
 class RawSignalCNN(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
@@ -34,7 +87,7 @@ class RawSignalCNN(nn.Module):
         return x
 
 class SensorDataProcessor:
-    def __init__(self, model_path, window_size=30, confidence_threshold=0.3, use_jit=True, debug=False):
+    def __init__(self, model_path, window_size=30, confidence_threshold=0.3, debug=False):
         self.window_size = window_size
         self.confidence_threshold = confidence_threshold
         self.num_classes = 27
@@ -44,7 +97,6 @@ class SensorDataProcessor:
         print(f"\nInitializing SensorDataProcessor with:")
         print(f"  Window size: {window_size}")
         print(f"  Confidence threshold: {confidence_threshold}")
-        print(f"  Use JIT: {use_jit}")
         print(f"  Debug mode: {debug}")
 
         # Initialize data buffers for each sensor
@@ -60,26 +112,20 @@ class SensorDataProcessor:
         self.recent_confidences = []
 
         # Load model
-        print(f"Loading model from {model_path}...")
-        # Construct potential JIT model path
-        model_jit_path = model_path.replace('.pth', '_jit.pt')
-        if use_jit and os.path.exists(model_jit_path):
-            try:
-                self.model = torch.jit.load(model_jit_path)
-                print(f"Successfully loaded JIT model from {model_jit_path}")
-            except Exception as e:
-                print(f"Failed to load JIT model from {model_jit_path}: {e}")
-                print("Falling back to regular model loading...")
-                self.model = self._load_regular_model(model_path)
-        else:
-            if use_jit:
-                 print(f"JIT model not found at {model_jit_path}. Loading regular model.")
-            else:
-                 print("JIT model not requested. Loading regular model.")
-            self.model = self._load_regular_model(model_path)
-
+        print(f"Loading scalogram model from {model_path}...")
+        self.model = SimpleJetsonCNN(num_classes=self.num_classes)
+        try:
+            if not os.path.exists(model_path):
+                print(f"Error: Model file not found at {model_path}")
+                sys.exit(1)
+            self.model.load_state_dict(torch.load(model_path, map_location='cpu'))
+            print(f"Successfully loaded scalogram model from {model_path}")
+        except Exception as e:
+            print(f"Error loading model state dict from {model_path}: {e}")
+            sys.exit(1)
         self.model.eval()
         print("Model loaded and ready for inference")
+
 
     def _load_regular_model(self, model_path):
         model = RawSignalCNN(num_classes=self.num_classes)
@@ -285,63 +331,42 @@ class SensorDataProcessor:
                     window_data = self.data_queue.get(timeout=0.1)
                     print("\n*** Got data from queue for prediction ***")
                 except queue.Empty:
-                    # No data available, continue loop
-                    # Check if we should still be running
                     if not self.running:
-                         break
-                    continue
+                        break
+                    continue  # skip to next iteration
 
-                # Prepare data for model
-                # Expected input shape: (1, 6, 5, 1, window_size)
-                x = window_data.astype(np.float32)  # (5, window, 6)
-                print(f"Data shape after initial conversion: {x.shape}")
-                x = np.transpose(x, (2, 0, 1))  # (6, 5, window)
-                print(f"Data shape after transpose: {x.shape}")
-                x = np.expand_dims(x, axis=2)  # (6, 5, 1, window)
-                print(f"Data shape after expand_dims: {x.shape}")
-                x_tensor = torch.from_numpy(x).unsqueeze(0)  # (1, 6, 5, 1, window)
-                print(f"Final tensor shape: {x_tensor.shape}")
+                # Convert window_data to numpy array
+                window_data = np.array(window_data)  # (5, window, 6)
 
-                # Make prediction
-                try:
-                    print("Running model inference...")
-                    with torch.no_grad():
-                        logits = self.model(x_tensor)
-                        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-                        pred_idx = int(np.argmax(probs))
-                        confidence = probs[pred_idx]
-                    print(f"Prediction successful! Predicted: {self.class_names[pred_idx]} with confidence {confidence:.4f}")
-                except Exception as e:
-                    print(f"Error during model inference: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
+                # --- Prepare scalogram input for model ---
+                grid_img = make_scalogram_grid(window_data)  # (H, W, 3)
+                img_pil = Image.fromarray((grid_img*255).astype(np.uint8))
+                img_pil = img_pil.resize((128, 128))
+                img_arr = np.array(img_pil).astype(np.float32) / 255.0
+                img_arr = (img_arr - 0.5) / 0.5  # Normalize to [-1, 1]
+                img_arr = np.transpose(img_arr, (2, 0, 1))  # (3, H, W)
+                img_tensor = torch.tensor(img_arr).unsqueeze(0)  # (1, 3, H, W)
 
-                # Store recent predictions
+                with torch.no_grad():
+                    logits = self.model(img_tensor)
+                    probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                    pred_idx = int(np.argmax(probs))
+                    confidence = float(probs[pred_idx])
+
+                self.last_prediction = pred_idx
+                self.last_confidence = confidence
                 self.recent_predictions.append(pred_idx)
                 self.recent_confidences.append(confidence)
-                if len(self.recent_predictions) > 10:
-                    self.recent_predictions.pop(0)
-                    self.recent_confidences.pop(0)
-
-                # Only report if confidence is above threshold and prediction changed or enough time passed
                 current_time = time.time()
-                # Report if:
-                # - Confidence is high enough AND
-                # - (Prediction is different OR it's been > 1.5s since last report of *any* prediction)
                 if confidence >= self.confidence_threshold and \
                    (pred_idx != self.last_prediction or current_time - self.last_report_time > 1.5):
-                        self.last_prediction = pred_idx
-                        self.last_confidence = confidence
-                        self.last_report_time = current_time
-                        
-                        # Print a more visual representation of the prediction
-                        self._print_visual_prediction(pred_idx, confidence)
+                    self.last_prediction = pred_idx
+                    self.last_confidence = confidence
+                    self.last_report_time = current_time
+                    self._print_visual_prediction(pred_idx, confidence)
                 else:
-                    # Always print visual prediction in debug mode
                     if self.debug:
                         print(f"Prediction below threshold or unchanged: {self.class_names[pred_idx]} ({confidence:.4f})")
-                        # Still update visual every few seconds even if prediction is unchanged
                         if current_time - self.last_report_time > 3.0:
                             self._print_visual_prediction(pred_idx, confidence)
                             self.last_report_time = current_time
@@ -501,17 +526,15 @@ class SensorDataProcessor:
         os._exit(0) # Force exit if necessary
 
 def main():
-    parser = argparse.ArgumentParser(description="Real-time ASL classification from MPU6050 sensors")
-    parser.add_argument('--model', type=str, default="best_rawsignal_cnn.pth",
-                        help="Path to model .pth file (JIT version '<model_name>_jit.pt' will be checked if --use-jit is set)")
+    parser = argparse.ArgumentParser(description="Real-time ASL classification from MPU6050 sensors (scalogram mode)")
+    parser.add_argument('--model', type=str, default="best_scalogram_cnn.pth",
+                        help="Path to scalogram model .pth file")
     parser.add_argument('--window', type=int, default=30,
                         help="Window size (samples)")
     parser.add_argument('--threshold', type=float, default=0.3,
                         help="Confidence threshold for predictions")
     parser.add_argument('--i2c', type=str, default="/dev/i2c-1",
                         help="I2C device path")
-    parser.add_argument('--use-jit', action='store_true',
-                        help="Use TorchScript JIT model if available (looks for <model_name>_jit.pt)")
     parser.add_argument('--debug', action='store_true',
                         help="Enable additional debug output")
     args = parser.parse_args()
@@ -527,11 +550,7 @@ def main():
 
     # Check if the model file exists
     model_exists = os.path.exists(args.model)
-    jit_model_path = args.model.replace('.pth', '_jit.pt')
-    jit_model_exists = os.path.exists(jit_model_path)
-
-    # If model doesn't exist in current directory, try looking in common subdirectories
-    if not model_exists and not jit_model_exists:
+    if not model_exists:
         possible_dirs = ["models", "weights", "checkpoints"]
         for dir_name in possible_dirs:
             if os.path.isdir(dir_name):
@@ -543,50 +562,35 @@ def main():
                             args.model = os.path.join(dir_name, file)
                             model_exists = True
                             print(f"Using model at: {args.model}")
-                        elif file == os.path.basename(jit_model_path):
-                            jit_model_path = os.path.join(dir_name, file)
-                            jit_model_exists = True
-                            print(f"Using JIT model at: {jit_model_path}")
-
-    # Final check if model exists
-    if not model_exists and not (args.use_jit and jit_model_exists):
+    if not model_exists:
         print("\nERROR: Model file not found!")
         print(f"Checked for: {args.model}")
-        if args.use_jit:
-            print(f"Checked for JIT model: {jit_model_path}")
-        
-        # Look for any model file as a fallback
         fallback_models = []
         for root, dirs, files in os.walk("."):
             for file in files:
                 if file.endswith(".pth") or file.endswith(".pt"):
                     fallback_models.append(os.path.join(root, file))
-        
         if fallback_models:
             print("\nFound these model files that could be used instead:")
             for model in fallback_models:
                 print(f"  {model}")
-            # Use the first one as fallback
             args.model = fallback_models[0]
             print(f"\nUsing {args.model} as fallback model")
             model_exists = True
         else:
             print("No model files found in this directory or subdirectories.")
             sys.exit(1)
-    
-    if args.use_jit and not jit_model_exists and model_exists:
-        print(f"Warning: --use-jit specified, but JIT model '{jit_model_path}' not found. Will use regular model '{args.model}'.")
 
     # Create and start the processor
     processor = SensorDataProcessor(
         model_path=args.model,
         window_size=args.window,
         confidence_threshold=args.threshold,
-        use_jit=args.use_jit,
         debug=args.debug
     )
 
     processor.start(i2c_device=args.i2c)
+
 
 if __name__ == "__main__":
     main()
