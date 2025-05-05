@@ -35,7 +35,7 @@ class RawSignalCNN(nn.Module):
         return x
 
 class SensorDataProcessor:
-    def __init__(self, model_path, window_size=30, confidence_threshold=0.3, use_jit=True, stdscr=None):
+    def __init__(self, model_path, window_size=91, confidence_threshold=0.3, use_jit=True, stdscr=None):
         self.window_size = window_size
         self.confidence_threshold = confidence_threshold
         self.num_classes = 27
@@ -360,9 +360,19 @@ class SensorDataProcessor:
     def process_data_loop(self):
         """Main loop for processing data and making predictions"""
         self.log("Processing thread started.")
+        last_display_update = 0
+        update_interval = 0.2  # Update display every 200ms even if prediction hasn't changed
         
         while self.running:
             try:
+                # Always update the display periodically if we have predictions
+                current_time = time.time()
+                if self.recent_predictions and current_time - last_display_update > update_interval:
+                    last_idx = self.recent_predictions[-1] if self.recent_predictions else 0
+                    last_conf = self.recent_confidences[-1] if self.recent_confidences else 0
+                    self.update_display(last_idx, last_conf)
+                    last_display_update = current_time
+                
                 # Get data from queue with timeout
                 try:
                     # Block for a short time to wait for data
@@ -529,7 +539,7 @@ def main(stdscr=None):
     parser = argparse.ArgumentParser(description="Real-time ASL classification from MPU6050 sensors")
     parser.add_argument('--model', type=str, default="best_rawsignal_cnn.pth",
                         help="Path to model .pth file (JIT version '<model_name>_jit.pt' will be checked if --use-jit is set)")
-    parser.add_argument('--window', type=int, default=30,
+    parser.add_argument('--window', type=int, default=91,
                         help="Window size (samples)")
     parser.add_argument('--threshold', type=float, default=0.3,
                         help="Confidence threshold for predictions")
