@@ -570,7 +570,7 @@ def main(stdscr=None):
                         help="Path to model .pth file (JIT version '<model_name>_jit.pt' will be checked if --use-jit is set)")
     parser.add_argument('--window', type=int, default=91,
                         help="Window size (samples)")
-    parser.add_argument('--threshold', type=float, default=0.8,
+    parser.add_argument('--threshold', type=float, default=0.3,
                         help="Confidence threshold for predictions")
     parser.add_argument('--i2c', type=str, default="/dev/i2c-1",
                         help="I2C device path")
