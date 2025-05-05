@@ -353,11 +353,14 @@ class SensorDataProcessor:
             self.stdscr.addstr(6, 2, buffer_status, curses.color_pair(5))
             
             # Instructions at the bottom
-            self.stdscr.addstr(height-1, 2, "Press 'q' to quit", curses.color_pair(5))
-            
+            # Place instructions at a fixed line to avoid scrolling
+            if height < 8:
+                self.stdscr.addstr(7 if height > 7 else height-1, 2, "[!] Terminal too small for display!", curses.color_pair(3) | curses.A_BOLD)
+            else:
+                self.stdscr.addstr(7, 2, "Press 'q' to quit", curses.color_pair(5))
             # Refresh the screen
             self.stdscr.refresh()
-            
+
         except Exception as e:
             # If there's an error updating the display, fall back to text mode
             self.stdscr = None
