@@ -135,47 +135,76 @@ class SensorDataProcessor:
 
     def _read_process_output(self):
         """Read data from the C process stdout"""
-        print("Waiting for C process to initialize...")
-        try:
-            for line in self.process.stdout:
-                if not self.running:
+        print("Stdout reader thread started.")
+        # Ensure process and stdout exist before entering loop
+        if not hasattr(self, 'process') or not self.process.stdout:
+             print("Error: C process or stdout not available for reading.")
+             self.running = False # Signal main loop to stop
+             return
+
+        while self.running:
+            try:
+                # Check if process has exited before reading
+                if self.process.poll() is not None:
                     break
+
+                line = self.process.stdout.readline()
+                if not line:
+                    # Check again if process exited after readline returned empty
+                    if self.process.poll() is not None:
+                        break
+                    # If process is still running, readline might timeout or encounter EOF temporarily
+                    time.sleep(0.01) # Small sleep to avoid busy-waiting
+                    continue
 
                 line = line.strip()
                 if not line:
                     continue
 
-                try:
-                    # Parse the line
-                    # Expected format: "sensor_idx gx gy gz ax ay az"
-                    parts = line.split()
-                    if len(parts) != 7:
-                        print(f"Invalid data format: {line}")
-                        continue
+                # Debug print raw line
+                print(f"Raw C Output: {line}")
 
-                    sensor_idx = int(parts[0])
-                    if sensor_idx < 0 or sensor_idx >= 5:
-                        print(f"Invalid sensor index: {sensor_idx}")
-                        continue
-
-                    # Parse the values
-                    values = [float(x) for x in parts[1:]]
-                    # Order: gx gy gz ax ay az
-                    
-                    # Add the values to the appropriate buffer
-                    self.sensor_buffers[sensor_idx].append(values)
-                    
-                    # Check if we have enough data for a prediction
-                    self._check_and_process_data()
-                    
-                except Exception as e:
-                    print(f"Error parsing data: {e}")
+                # Parse the line: sensor_index ax ay az gx gy gz
+                parts = line.split()
+                if len(parts) != 7:
+                    print(f"Skipping invalid line (expected 7 parts, got {len(parts)}): {line}")
                     continue
-        except Exception as e:
-            if self.running:
-                print(f"Error reading from C process: {e}")
-        finally:
-            print("Stdout reader thread finished.")
+
+                # Use try-except for robust parsing
+                try:
+                    sensor_idx = int(parts[0])
+                    # Validate sensor index range
+                    if not (0 <= sensor_idx < 5):
+                        print(f"Skipping invalid sensor index ({sensor_idx}): {line}")
+                        continue
+
+                    # Extract sensor values in the order they appear in the C output
+                    # C Output: sensor_idx gx gy gz ax ay az
+                    gx, gy, gz, ax, ay, az = map(float, parts[1:])
+
+                    # Create the data point - already in the correct order for the model
+                    # Model Input Order: gx, gy, gz, ax, ay, az
+                    data_point = [gx, gy, gz, ax, ay, az]
+
+                except ValueError as e:
+                    print(f"Error parsing numeric values in line '{line}': {e}")
+                    continue # Skip this line
+
+                # Add to the appropriate sensor buffer
+                self.sensor_buffers[sensor_idx].append(data_point)
+
+                # Check if we have enough data for inference (moved outside parsing try-except)
+                self._check_and_process_data()
+
+            except Exception as e:
+                # Catch unexpected errors during the read/process loop
+                if self.running: # Avoid printing errors during shutdown
+                     print(f"Unexpected error in stdout reader thread: {e}")
+                     import traceback
+                     traceback.print_exc()
+                time.sleep(0.1) # Avoid tight loop on continuous error
+
+        print("Stdout reader thread finished.")
 
     def _read_process_stderr(self):
         """Read data from the C process stderr"""
