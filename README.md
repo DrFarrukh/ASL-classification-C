@@ -177,6 +177,7 @@ If you want to use a different model:
 - Verify the path to the Docker run script in `run_asl_classifier.sh`
 - Check that the Docker container has access to the I2C devices
 - **If you previously saw an error like `exec: "cd": executable file not found in $PATH`, this has been fixed in the latest version of `run_asl_classifier.sh` by running commands using `/bin/bash -c` inside the container.**
+- **If you encountered I2C device access issues (`Error opening I2C device /dev/i2c-1: No such file or directory`), this has been fixed by explicitly mapping I2C devices into the Docker container.**
 
 ### Classification Issues
 
