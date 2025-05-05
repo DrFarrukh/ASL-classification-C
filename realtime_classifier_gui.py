@@ -289,7 +289,7 @@ class ASLClassifierGUI:
         self.master.after(100, self.check_queue)
 
 class SensorDataProcessor:
-    def __init__(self, model_path, window_size=30, confidence_threshold=0.3, use_jit=True, gui=None, model_type='raw'):
+    def __init__(self, model_path, window_size=91, confidence_threshold=0.3, use_jit=True, gui=None, model_type='raw'):
         self.window_size = window_size
         self.confidence_threshold = confidence_threshold
         self.num_classes = 27
