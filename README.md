@@ -10,29 +10,6 @@ The system captures motion data from multiple MPU6050 sensors connected via a TC
 
 ## Components
 
-### Display and Output Options
-
-This project now supports several ways to visualize ASL predictions in real time:
-
-- **Curses-based Terminal GUI:**
-  - `asl_curses_display.py` — Displays predictions, confidence bars, and recent history in a terminal GUI using only ASCII characters (no extra dependencies).
-  - Launch using `./run_asl_curses.sh` for a smooth experience on Jetson Nano.
-
-- **Plain Text/ASCII Output:**
-  - `asl_text_output.py` — Outputs predictions and confidence in plain text, suitable for piping or use with `watch`.
-  - Use with `./watch_asl.sh` to see a live-updating ASCII display in any terminal.
-
-- **(Optional) Tkinter GUI:**
-  - `asl_gui_display.py` — (Requires Tkinter, not recommended on Jetson Nano/Docker; for desktop use only.)
-
-### Recommended Launch Scripts
-
-- `run_direct.sh` — Preferred for Jetson Nano: ensures correct I2C device mapping and permissions inside Docker.
-- `run_asl_curses.sh` — Launches the curses-based GUI display (uses `run_direct.sh` internally).
-- `watch_asl.sh` — Launches the classifier with text output and displays results using `watch` for simple ASCII visualization.
-
-See below for detailed usage instructions.
-
 ### Hardware Requirements
 
 - NVIDIA Jetson Nano
@@ -134,42 +111,6 @@ See below for detailed usage instructions.
 
 ## Usage
 
-### 1. Curses Terminal GUI (Recommended)
-
-This mode provides a real-time, interactive terminal display with confidence bars and recent predictions.
-
-```bash
-./run_asl_curses.sh
-```
-
-- Requires only a standard terminal (no X11 or GUI needed).
-- Updates automatically with new predictions.
-- Works inside Docker on Jetson Nano.
-
-### 2. ASCII/Text Output with Watch
-
-This mode outputs predictions in plain text and uses `watch` for live updates.
-
-```bash
-./watch_asl.sh
-```
-
-- Collects data at a slower rate (91-sample window, ~5 seconds).
-- Updates every second with a clean ASCII bar and stats.
-- Works in any terminal, no GUI required.
-
-### 3. (Optional) Tkinter GUI
-
-For desktop use only (not supported in Jetson Nano Docker):
-
-```bash
-./run_asl_gui.sh
-```
-
----
-
-**Note:** For all modes, it is recommended to use `run_direct.sh` to ensure proper access to I2C devices inside Docker. If you experience permission errors, always use `run_direct.sh` or the scripts that call it.
-
 1. Run the direct launcher script (recommended):
    ```bash
    ./run_direct.sh
@@ -223,17 +164,6 @@ If you want to use a different model:
 
 ## Troubleshooting
 
-### Display/Output Issues
-
-- **No output or permission denied errors:**
-  - Always use `run_direct.sh` or scripts that invoke it (`run_asl_curses.sh`, `watch_asl.sh`). This ensures I2C devices are mapped with correct permissions.
-- **Unicode errors or broken bars:**
-  - All displays now use only ASCII characters for maximum compatibility.
-- **No GUI on Jetson Nano:**
-  - Use the curses or text/ASCII modes; Tkinter is not available in the Docker environment.
-- **Display not updating:**
-  - Ensure you are running the correct script and not redirecting output to a file.
-
 ### I2C Issues
 
 - Ensure I2C is enabled on your Jetson Nano
@@ -260,9 +190,6 @@ If you want to use a different model:
 [MIT License](LICENSE)
 
 ## Acknowledgments
-
-- Real-time terminal GUI and ASCII display modes designed for compatibility with Jetson Nano and Docker environments.
-- Thanks to the NVIDIA Jetson community and open-source contributors for guidance on hardware access in containers.
 
 - This project uses the PyTorch deep learning framework
 - The MPU6050 sensor interface is based on the I2C protocol
