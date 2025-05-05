@@ -11,10 +11,12 @@ import sys
 import os
 from collections import deque
 import tkinter as tk
-from tkinter import ttk, font
+from tkinter import ttk, font, Canvas
 import pywt
-from PIL import Image
+from PIL import Image, ImageTk
 from matplotlib.colors import Normalize
+import matplotlib.pyplot as plt
+from io import BytesIO
 
 # --- Scalogram Model definition ---
 class SimpleJetsonCNN(nn.Module):
@@ -114,6 +116,9 @@ class ASLClassifierGUI:
         self.history_frame = tk.Frame(master, bg='#2E2E2E')
         self.history_frame.pack(fill=tk.X, padx=20, pady=10)
         
+        self.viz_frame = tk.Frame(master, bg='#2E2E2E')
+        self.viz_frame.pack(fill=tk.X, padx=20, pady=10)
+        
         self.status_frame = tk.Frame(master, bg='#2E2E2E')
         self.status_frame.pack(fill=tk.X, padx=20, pady=10)
         
@@ -210,7 +215,7 @@ class ASLClassifierGUI:
         # Set up periodic UI update
         self.master.after(100, self.check_queue)
 
-    def update_prediction(self, letter, confidence):
+    def update_prediction(self, letter, confidence, scalogram_img=None):
         """Update the UI with a new prediction"""
         # Update letter
         self.letter_label.config(text=letter)
@@ -244,6 +249,34 @@ class ASLClassifierGUI:
             history_str += f"{l} ({c:.2f})  "
         self.history_text.insert(tk.END, history_str)
         self.history_text.config(state=tk.DISABLED)
+        
+        # Update scalogram visualization if provided
+        if scalogram_img is not None:
+            self.update_scalogram(scalogram_img)
+            
+    def update_scalogram(self, grid_img):
+        """Update the scalogram visualization"""
+        try:
+            # Convert numpy array to PIL Image
+            if isinstance(grid_img, np.ndarray):
+                # Scale to 0-255 range for display
+                img_arr = (grid_img * 255).astype(np.uint8)
+                img = Image.fromarray(img_arr)
+                
+                # Resize to fit canvas
+                canvas_width = self.viz_canvas.winfo_width() or 300
+                canvas_height = self.viz_canvas.winfo_height() or 150
+                img = img.resize((canvas_width, canvas_height), Image.LANCZOS)
+                
+                # Convert to PhotoImage for Tkinter
+                photo = ImageTk.PhotoImage(img)
+                
+                # Update canvas
+                self.viz_canvas.delete("all")
+                self.viz_canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+                self.viz_canvas.image = photo  # Keep reference to prevent garbage collection
+        except Exception as e:
+            print(f"Error updating scalogram: {e}")
     
     def update_status(self, status, color='white'):
         """Update the status message"""
@@ -538,7 +571,11 @@ class SensorDataProcessor:
                 letter = self.class_names[pred_idx]
                 print(f"Prediction: {letter} (Confidence: {confidence:.2f})")
                 if self.gui:
-                    self.gui.update_prediction(letter, confidence)
+                    # Pass the scalogram image for visualization if using scalogram model
+                    if self.model_type == 'scalogram':
+                        self.gui.update_prediction(letter, confidence, grid_img)
+                    else:
+                        self.gui.update_prediction(letter, confidence)
                     
             except Exception as e:
                 if self.running:
