@@ -52,6 +52,6 @@ sudo docker run --runtime nvidia -it --rm \
     -v "$ASL_DIR:/asl" \
     -w /asl \
     dustynv/jetson-inference:r32.7.1 \
-    bash -c "cd /asl && python3 realtime_classifier_simple.py --use-jit --threshold 0.3"
+    bash -c "cd /asl && python3 realtime_classifier_simple.py --use-jit --threshold 0.3 --debug"
 
 echo "ASL classifier Docker container exited."

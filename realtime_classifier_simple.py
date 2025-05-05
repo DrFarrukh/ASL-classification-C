@@ -337,6 +337,14 @@ class SensorDataProcessor:
                         
                         # Print a more visual representation of the prediction
                         self._print_visual_prediction(pred_idx, confidence)
+                else:
+                    # Always print visual prediction in debug mode
+                    if self.debug:
+                        print(f"Prediction below threshold or unchanged: {self.class_names[pred_idx]} ({confidence:.4f})")
+                        # Still update visual every few seconds even if prediction is unchanged
+                        if current_time - self.last_report_time > 3.0:
+                            self._print_visual_prediction(pred_idx, confidence)
+                            self.last_report_time = current_time
 
             except Exception as e:
                 if self.running:

@@ -1,0 +1,336 @@
+import numpy as np
+import torch
+import torch.nn as nn
+import subprocess
+import threading
+import time
+import argparse
+import queue
+import signal
+import sys
+import os
+from collections import deque
+import tkinter as tk
+from tkinter import ttk, font
+
+# --- Raw Signal Model definition ---
+class RawSignalCNN(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv3d(6, 32, kernel_size=(3,1,5), padding=(1,0,2)),
+            nn.ReLU(),
+            nn.Conv3d(32, 64, kernel_size=(3,1,3), padding=(1,0,1)),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool3d((1,1,1))
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(64, 128),
+            nn.ReLU(),
+            nn.Linear(128, num_classes)
+        )
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
+
+class ASLClassifierGUI:
+    def __init__(self, master):
+        self.master = master
+        master.title("ASL Classifier")
+        master.geometry("800x600")
+        master.configure(bg='#2E2E2E')
+        
+        # Set up fonts
+        self.title_font = font.Font(family="Helvetica", size=24, weight="bold")
+        self.letter_font = font.Font(family="Helvetica", size=72, weight="bold")
+        self.label_font = font.Font(family="Helvetica", size=14)
+        self.status_font = font.Font(family="Helvetica", size=12)
+        
+        # Create frames
+        self.top_frame = tk.Frame(master, bg='#2E2E2E')
+        self.top_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        self.letter_frame = tk.Frame(master, bg='#2E2E2E')
+        self.letter_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        self.confidence_frame = tk.Frame(master, bg='#2E2E2E')
+        self.confidence_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        self.history_frame = tk.Frame(master, bg='#2E2E2E')
+        self.history_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        self.status_frame = tk.Frame(master, bg='#2E2E2E')
+        self.status_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        # Title
+        self.title_label = tk.Label(
+            self.top_frame, 
+            text="ASL Classifier", 
+            font=self.title_font,
+            fg='white',
+            bg='#2E2E2E'
+        )
+        self.title_label.pack(pady=10)
+        
+        # Current prediction (large letter)
+        self.letter_label = tk.Label(
+            self.letter_frame, 
+            text="?", 
+            font=self.letter_font,
+            fg='white',
+            bg='#2E2E2E'
+        )
+        self.letter_label.pack(expand=True)
+        
+        # Confidence bar
+        self.confidence_label = tk.Label(
+            self.confidence_frame, 
+            text="Confidence:", 
+            font=self.label_font,
+            fg='white',
+            bg='#2E2E2E',
+            anchor='w'
+        )
+        self.confidence_label.pack(fill=tk.X)
+        
+        self.confidence_bar = ttk.Progressbar(
+            self.confidence_frame, 
+            orient=tk.HORIZONTAL, 
+            length=100, 
+            mode='determinate'
+        )
+        self.confidence_bar.pack(fill=tk.X, pady=5)
+        
+        self.confidence_value = tk.Label(
+            self.confidence_frame, 
+            text="0%", 
+            font=self.label_font,
+            fg='white',
+            bg='#2E2E2E'
+        )
+        self.confidence_value.pack(pady=5)
+        
+        # Recent predictions
+        self.history_label = tk.Label(
+            self.history_frame, 
+            text="Recent Predictions:", 
+            font=self.label_font,
+            fg='white',
+            bg='#2E2E2E',
+            anchor='w'
+        )
+        self.history_label.pack(fill=tk.X)
+        
+        self.history_text = tk.Text(
+            self.history_frame, 
+            height=3, 
+            font=self.status_font,
+            fg='white',
+            bg='#3E3E3E',
+            wrap=tk.WORD
+        )
+        self.history_text.pack(fill=tk.X, pady=5)
+        self.history_text.insert(tk.END, "Waiting for predictions...")
+        self.history_text.config(state=tk.DISABLED)
+        
+        # Status
+        self.status_label = tk.Label(
+            self.status_frame, 
+            text="Status: Initializing...", 
+            font=self.status_font,
+            fg='yellow',
+            bg='#2E2E2E',
+            anchor='w'
+        )
+        self.status_label.pack(fill=tk.X, pady=5)
+        
+        # Initialize history
+        self.prediction_history = []
+        
+        # Set up style for progress bar
+        self.style = ttk.Style()
+        self.style.theme_use('default')
+        self.style.configure("TProgressbar", thickness=30, background='#4CAF50')
+        
+        # Set up periodic UI update
+        self.master.after(100, self.check_queue)
+    
+    def update_prediction(self, letter, confidence):
+        """Update the UI with a new prediction"""
+        # Update letter
+        self.letter_label.config(text=letter)
+        
+        # Update confidence bar
+        confidence_pct = int(confidence * 100)
+        self.confidence_bar['value'] = confidence_pct
+        self.confidence_value.config(text=f"{confidence_pct}%")
+        
+        # Change color based on confidence
+        if confidence >= 0.7:
+            self.style.configure("TProgressbar", background='#4CAF50')  # Green
+            self.letter_label.config(fg='#4CAF50')
+        elif confidence >= 0.4:
+            self.style.configure("TProgressbar", background='#FFC107')  # Yellow
+            self.letter_label.config(fg='#FFC107')
+        else:
+            self.style.configure("TProgressbar", background='#F44336')  # Red
+            self.letter_label.config(fg='#F44336')
+        
+        # Update history
+        self.prediction_history.append((letter, confidence))
+        if len(self.prediction_history) > 10:
+            self.prediction_history.pop(0)
+        
+        # Update history text
+        self.history_text.config(state=tk.NORMAL)
+        self.history_text.delete(1.0, tk.END)
+        history_str = ""
+        for i, (l, c) in enumerate(reversed(self.prediction_history[-5:])):
+            history_str += f"{l} ({c:.2f})  "
+        self.history_text.insert(tk.END, history_str)
+        self.history_text.config(state=tk.DISABLED)
+    
+    def update_status(self, status, color='white'):
+        """Update the status message"""
+        self.status_label.config(text=f"Status: {status}", fg=color)
+    
+    def check_queue(self):
+        """Check for updates from the prediction thread"""
+        # This will be called by the main thread to check for updates
+        # from the prediction thread
+        self.master.after(100, self.check_queue)
+
+class SensorDataProcessor:
+    def __init__(self, model_path, window_size=30, confidence_threshold=0.3, use_jit=True, gui=None):
+        self.window_size = window_size
+        self.confidence_threshold = confidence_threshold
+        self.num_classes = 27
+        self.class_names = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','Rest','S','T','U','V','W','X','Y','Z']
+        self.gui = gui
+        
+        print(f"\nInitializing SensorDataProcessor with:")
+        print(f"  Window size: {window_size}")
+        print(f"  Confidence threshold: {confidence_threshold}")
+        print(f"  Use JIT: {use_jit}")
+        
+        if self.gui:
+            self.gui.update_status("Initializing sensor processor...", "yellow")
+
+        # Initialize data buffers for each sensor
+        self.sensor_buffers = [deque(maxlen=window_size) for _ in range(5)]
+        self.data_queue = queue.Queue()
+        self.running = True
+        self.last_prediction = None
+        self.last_confidence = 0.0
+        self.last_report_time = 0 # Initialize last report time
+        
+        # For tracking predictions
+        self.recent_predictions = []
+        self.recent_confidences = []
+
+        # Load model
+        print(f"Loading model from {model_path}...")
+        if self.gui:
+            self.gui.update_status(f"Loading model from {model_path}...", "yellow")
+            
+        # Construct potential JIT model path
+        model_jit_path = model_path.replace('.pth', '_jit.pt')
+        if use_jit and os.path.exists(model_jit_path):
+            try:
+                self.model = torch.jit.load(model_jit_path)
+                print(f"Successfully loaded JIT model from {model_jit_path}")
+                if self.gui:
+                    self.gui.update_status(f"Loaded JIT model", "green")
+            except Exception as e:
+                print(f"Failed to load JIT model from {model_jit_path}: {e}")
+                print("Falling back to regular model loading...")
+                if self.gui:
+                    self.gui.update_status(f"JIT model load failed, trying regular model", "yellow")
+                self.model = self._load_regular_model(model_path)
+        else:
+            if use_jit:
+                 print(f"JIT model not found at {model_jit_path}. Loading regular model.")
+            else:
+                 print("JIT model not requested. Loading regular model.")
+            self.model = self._load_regular_model(model_path)
+
+        self.model.eval()
+        print("Model loaded and ready for inference")
+        if self.gui:
+            self.gui.update_status("Model loaded and ready", "green")
+
+    def _load_regular_model(self, model_path):
+        model = RawSignalCNN(num_classes=self.num_classes)
+        try:
+            # Check if the regular model file exists
+            if not os.path.exists(model_path):
+                 print(f"Error: Model file not found at {model_path}")
+                 if self.gui:
+                     self.gui.update_status(f"Error: Model file not found!", "red")
+                 sys.exit(1)
+            model.load_state_dict(torch.load(model_path, map_location='cpu'))
+            print(f"Successfully loaded regular model from {model_path}")
+            if self.gui:
+                self.gui.update_status(f"Loaded regular model", "green")
+        except Exception as e:
+             print(f"Error loading model state dict from {model_path}: {e}")
+             if self.gui:
+                 self.gui.update_status(f"Error loading model: {e}", "red")
+             sys.exit(1)
+        return model
+
+    def start_c_process(self, i2c_device="/dev/i2c-1"):
+        """Start the C process that reads sensor data"""
+        # Construct path relative to this script's location
+        c_executable = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mpu6050_reader")
+        if not os.path.exists(c_executable):
+            print(f"C executable not found at {c_executable}. Please compile NEW_C.c first.")
+            print("Hint: gcc -o mpu6050_reader NEW_C.c -lm")
+            if self.gui:
+                self.gui.update_status(f"Error: C executable not found", "red")
+            sys.exit(1)
+
+        # Check if the process needs execution permissions
+        if not os.access(c_executable, os.X_OK):
+            print(f"Adding execute permissions to {c_executable}")
+            try:
+                os.chmod(c_executable, 0o755)
+            except OSError as e:
+                print(f"Error setting execute permission for {c_executable}: {e}")
+
+        # Start the C process
+        cmd = [c_executable, i2c_device]
+        print(f"Starting C process: {' '.join(cmd)}")
+        if self.gui:
+            self.gui.update_status(f"Starting sensor data collection...", "yellow")
+            
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,  # Line buffered
+                universal_newlines=True,  # Text mode
+                preexec_fn=os.setsid  # Create a new process group
+            )
+            print(f"Started sensor data collection process (PID: {self.process.pid})")
+            if self.gui:
+                self.gui.update_status(f"Sensor data collection started", "green")
+        except Exception as e:
+            print(f"Error starting C process: {e}")
+            if self.gui:
+                self.gui.update_status(f"Error starting sensor process: {e}", "red")
+            sys.exit(1)
+
+        # Start threads to read from stdout and stderr
+        self.reader_thread = threading.Thread(target=self._read_process_output, name="StdoutReader")
+        self.reader_thread.daemon = True
+        self.reader_thread.start()
+        print("Stdout reader thread started.")
+
+        self.stderr_thread = threading.Thread(target=self._read_process_stderr, name="StderrReader")
+        self.stderr_thread.daemon = True
+        self.stderr_thread.start()
+        print("Stderr reader thread started.")
