@@ -352,6 +352,7 @@ class SensorDataProcessor:
                     probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
                     pred_idx = int(np.argmax(probs))
                     confidence = float(probs[pred_idx])
+                    self.last_probs = probs  # Store for later printing
 
                 self.last_prediction = pred_idx
                 self.last_confidence = confidence
