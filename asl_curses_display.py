@@ -281,21 +281,17 @@ class SensorDataProcessor:
             self.stdscr.clear()
             height, width = self.stdscr.getmaxyx()
             
-            # Title
+            # Title and time on the same line
             title = "ASL CLASSIFIER"
-            self.stdscr.addstr(1, (width - len(title)) // 2, title, curses.color_pair(4) | curses.A_BOLD)
-            
-            # Current time
             time_str = time.strftime("%H:%M:%S")
-            self.stdscr.addstr(1, width - len(time_str) - 2, time_str, curses.color_pair(5))
+            self.stdscr.addstr(0, 2, title, curses.color_pair(4) | curses.A_BOLD)
+            self.stdscr.addstr(0, width - len(time_str) - 2, time_str, curses.color_pair(5))
             
             # Divider
-            self.stdscr.addstr(2, 0, "=" * (width-1), curses.color_pair(5))
+            self.stdscr.addstr(1, 0, "=" * (width-1), curses.color_pair(5))
             
-            # Current prediction (large letter)
+            # Current prediction (large letter) and confidence on the same line
             letter = self.class_names[pred_idx]
-            letter_y = 5
-            letter_x = (width - len(letter)) // 2
             
             # Choose color based on confidence
             if confidence >= 0.7:
@@ -305,25 +301,29 @@ class SensorDataProcessor:
             else:
                 color = curses.color_pair(3)  # Red
                 
-            self.stdscr.addstr(letter_y, letter_x, letter, color | curses.A_BOLD)
+            # Display letter and confidence on the same line
+            self.stdscr.addstr(3, 2, "PREDICTION:", curses.color_pair(5))
+            self.stdscr.addstr(3, 14, letter, color | curses.A_BOLD)
             
-            # Confidence bar
+            # Confidence bar on the same line
             conf_label = "Confidence: "
-            self.stdscr.addstr(letter_y + 3, 2, conf_label, curses.color_pair(5))
+            self.stdscr.addstr(3, 20, conf_label, curses.color_pair(5))
             
-            bar_width = width - len(conf_label) - 10
+            bar_width = 30  # Fixed width to save space
             filled = int(bar_width * confidence)
             
             # Draw the bar
-            self.stdscr.addstr(letter_y + 3, 2 + len(conf_label), "[" + "#" * filled + "-" * (bar_width - filled) + "]", color)
+            self.stdscr.addstr(3, 20 + len(conf_label), "[" + "#" * filled + "-" * (bar_width - filled) + "]", color)
             
             # Confidence percentage
             conf_pct = f"{int(confidence * 100)}%"
-            self.stdscr.addstr(letter_y + 3, width - len(conf_pct) - 2, conf_pct, color)
+            self.stdscr.addstr(3, 20 + len(conf_label) + bar_width + 2, conf_pct, color)
             
-            # Recent predictions
-            self.stdscr.addstr(letter_y + 5, 2, "Recent Predictions:", curses.color_pair(4))
+            # Recent predictions - more compact display
+            self.stdscr.addstr(5, 2, "Recent:", curses.color_pair(4))
             
+            # Display recent predictions horizontally to save space
+            recent_x = 10
             for i, (idx, conf) in enumerate(zip(self.recent_predictions[-5:], self.recent_confidences[-5:])):
                 if i >= 5:  # Show at most 5 recent predictions
                     break
@@ -337,16 +337,18 @@ class SensorDataProcessor:
                     color = curses.color_pair(2)  # Yellow
                 else:
                     color = curses.color_pair(3)  # Red
-                    
-                # Create a mini bar
-                mini_width = 20
-                mini_filled = int(mini_width * conf)
-                mini_bar = "[" + "#" * mini_filled + "-" * (mini_width - mini_filled) + "]"
                 
-                self.stdscr.addstr(letter_y + 6 + i, 4, f"{l} {mini_bar} {conf:.2f}", color)
+                # Display in compact format
+                self.stdscr.addstr(5, recent_x, f"{l}({conf:.2f})", color)
+                recent_x += len(l) + 8  # Space for next prediction
             
-            # Instructions
-            self.stdscr.addstr(height-2, 2, "Press 'q' to quit", curses.color_pair(5))
+            # Sensor data status
+            buffer_sizes = [len(buffer) for buffer in self.sensor_buffers]
+            buffer_status = f"Sensors: {buffer_sizes[0]}/{buffer_sizes[1]}/{buffer_sizes[2]}/{buffer_sizes[3]}/{buffer_sizes[4]} of {self.window_size}"
+            self.stdscr.addstr(6, 2, buffer_status, curses.color_pair(5))
+            
+            # Instructions at the bottom
+            self.stdscr.addstr(height-1, 2, "Press 'q' to quit", curses.color_pair(5))
             
             # Refresh the screen
             self.stdscr.refresh()
