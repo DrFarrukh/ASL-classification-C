@@ -97,8 +97,13 @@ class SensorDataProcessor:
     def log(self, message):
         """Log a message to the screen or stdout"""
         if self.stdscr:
-            # Add to a log buffer that we could display if needed
-            pass
+            # Buffer logs to display in the UI instead of printing
+            if not hasattr(self, 'log_buffer'):
+                self.log_buffer = []
+            self.log_buffer.append(message)
+            # Keep only last 10 log lines
+            if len(self.log_buffer) > 10:
+                self.log_buffer = self.log_buffer[-10:]
         else:
             print(message)
 
@@ -359,6 +364,10 @@ class SensorDataProcessor:
                 self.stdscr.addstr(7 if height > 7 else height-1, 2, "[!] Terminal too small for display!", curses.color_pair(3) | curses.A_BOLD)
             else:
                 self.stdscr.addstr(7, 2, "Press 'q' to quit", curses.color_pair(5))
+            # Show last log line for debug if available
+            if hasattr(self, 'log_buffer') and self.log_buffer:
+                log_msg = self.log_buffer[-1]
+                self.stdscr.addstr(8, 2, f"Log: {log_msg[:width-8]}", curses.color_pair(4))
             # Refresh the screen
             self.stdscr.refresh()
 
