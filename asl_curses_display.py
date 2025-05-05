@@ -222,7 +222,7 @@ class SensorDataProcessor:
                 self._check_and_process_data()
 
                 # Slow down: 90 samples in 5 seconds ≈ 0.055 sec/sample
-                time.sleep(0.055)
+                # time.sleep(0.055)
 
             except Exception as e:
                 # Catch unexpected errors during the read/process loop
