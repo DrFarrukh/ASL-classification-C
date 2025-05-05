@@ -34,11 +34,18 @@ class RawSignalCNN(nn.Module):
         return x
 
 class SensorDataProcessor:
-    def __init__(self, model_path, window_size=91, confidence_threshold=0.6, use_jit=True):
+    def __init__(self, model_path, window_size=30, confidence_threshold=0.3, use_jit=True, debug=False):
         self.window_size = window_size
         self.confidence_threshold = confidence_threshold
         self.num_classes = 27
         self.class_names = ['A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','Rest','S','T','U','V','W','X','Y','Z']
+        self.debug = debug
+        
+        print(f"\nInitializing SensorDataProcessor with:")
+        print(f"  Window size: {window_size}")
+        print(f"  Confidence threshold: {confidence_threshold}")
+        print(f"  Use JIT: {use_jit}")
+        print(f"  Debug mode: {debug}")
 
         # Initialize data buffers for each sensor
         self.sensor_buffers = [deque(maxlen=window_size) for _ in range(5)]
@@ -233,34 +240,50 @@ class SensorDataProcessor:
 
     def _check_and_process_data(self):
         """Check if all buffers are full and queue data for prediction."""
+        # Get current buffer sizes
+        buffer_sizes = [len(buffer) for buffer in self.sensor_buffers]
+        
+        # Print buffer sizes every 10 calls (to avoid flooding the console)
+        if hasattr(self, '_check_count'):
+            self._check_count += 1
+            if self._check_count % 10 == 0:
+                print(f"Buffer sizes: {buffer_sizes} (need {self.window_size} each)")
+        else:
+            self._check_count = 0
+            print(f"Buffer sizes: {buffer_sizes} (need {self.window_size} each)")
+        
         # Check if all buffers have enough data
-        if all(len(buffer) >= self.window_size for buffer in self.sensor_buffers):
+        if all(size >= self.window_size for size in buffer_sizes):
+            print(f"\n*** All buffers filled! Preparing data for prediction ***\n")
             # Create a numpy array from the buffers
             window_data = np.array([list(buffer) for buffer in self.sensor_buffers])
             
             # Queue the data for processing
             try:
                 self.data_queue.put(window_data, block=False)
+                print(f"Data queued for prediction. Queue size: {self.data_queue.qsize()}")
             except queue.Full:
                 # Queue is full, skip this window
+                print("Queue full, skipping this window")
                 pass
-            
-            # --- Overlapping vs Non-overlapping windows --- 
-            # The deque with maxlen handles overlapping windows automatically.
-            # If non-overlapping windows are needed, clear the buffers here:
-            # for buffer in self.sensor_buffers:
-            #    buffer.clear()
-            # -------------------------------------------------
 
     def process_data_loop(self):
         """Main loop for processing data and making predictions"""
         print("Processing thread started.")
+        print(f"Using model: {self.model.__class__.__name__}")
+        print(f"Confidence threshold: {self.confidence_threshold}")
+        print(f"Window size: {self.window_size}")
+        print(f"Number of classes: {self.num_classes}")
+        print(f"Class names: {self.class_names}")
+        print("Waiting for data...")
+        
         while self.running:
             try:
                 # Get data from queue with timeout
                 try:
                     # Block for a short time to wait for data
                     window_data = self.data_queue.get(timeout=0.1)
+                    print("\n*** Got data from queue for prediction ***")
                 except queue.Empty:
                     # No data available, continue loop
                     # Check if we should still be running
@@ -271,16 +294,28 @@ class SensorDataProcessor:
                 # Prepare data for model
                 # Expected input shape: (1, 6, 5, 1, window_size)
                 x = window_data.astype(np.float32)  # (5, window, 6)
+                print(f"Data shape after initial conversion: {x.shape}")
                 x = np.transpose(x, (2, 0, 1))  # (6, 5, window)
+                print(f"Data shape after transpose: {x.shape}")
                 x = np.expand_dims(x, axis=2)  # (6, 5, 1, window)
+                print(f"Data shape after expand_dims: {x.shape}")
                 x_tensor = torch.from_numpy(x).unsqueeze(0)  # (1, 6, 5, 1, window)
+                print(f"Final tensor shape: {x_tensor.shape}")
 
                 # Make prediction
-                with torch.no_grad():
-                    logits = self.model(x_tensor)
-                    probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-                    pred_idx = int(np.argmax(probs))
-                    confidence = probs[pred_idx]
+                try:
+                    print("Running model inference...")
+                    with torch.no_grad():
+                        logits = self.model(x_tensor)
+                        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                        pred_idx = int(np.argmax(probs))
+                        confidence = probs[pred_idx]
+                    print(f"Prediction successful! Predicted: {self.class_names[pred_idx]} with confidence {confidence:.4f}")
+                except Exception as e:
+                    print(f"Error during model inference: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
 
                 # Store recent predictions
                 self.recent_predictions.append(pred_idx)
@@ -461,36 +496,86 @@ def main():
     parser = argparse.ArgumentParser(description="Real-time ASL classification from MPU6050 sensors")
     parser.add_argument('--model', type=str, default="best_rawsignal_cnn.pth",
                         help="Path to model .pth file (JIT version '<model_name>_jit.pt' will be checked if --use-jit is set)")
-    parser.add_argument('--window', type=int, default=91,
+    parser.add_argument('--window', type=int, default=30,
                         help="Window size (samples)")
-    parser.add_argument('--threshold', type=float, default=0.6,
+    parser.add_argument('--threshold', type=float, default=0.3,
                         help="Confidence threshold for predictions")
     parser.add_argument('--i2c', type=str, default="/dev/i2c-1",
                         help="I2C device path")
     parser.add_argument('--use-jit', action='store_true',
                         help="Use TorchScript JIT model if available (looks for <model_name>_jit.pt)")
+    parser.add_argument('--debug', action='store_true',
+                        help="Enable additional debug output")
     args = parser.parse_args()
 
-    # Ensure the model path exists before starting
+    # List all files in the current directory to help debug model loading issues
+    print("\nListing files in current directory:")
+    for file in os.listdir("."):
+        if file.endswith(".pth") or file.endswith(".pt"):
+            print(f"  Found model file: {file}")
+        elif os.path.isdir(file):
+            print(f"  Directory: {file}")
+    print()
+
+    # Check if the model file exists
     model_exists = os.path.exists(args.model)
     jit_model_path = args.model.replace('.pth', '_jit.pt')
     jit_model_exists = os.path.exists(jit_model_path)
 
+    # If model doesn't exist in current directory, try looking in common subdirectories
+    if not model_exists and not jit_model_exists:
+        possible_dirs = ["models", "weights", "checkpoints"]
+        for dir_name in possible_dirs:
+            if os.path.isdir(dir_name):
+                print(f"Looking for models in {dir_name}/")
+                for file in os.listdir(dir_name):
+                    if file.endswith(".pth") or file.endswith(".pt"):
+                        print(f"  Found model in subdirectory: {dir_name}/{file}")
+                        if file == os.path.basename(args.model):
+                            args.model = os.path.join(dir_name, file)
+                            model_exists = True
+                            print(f"Using model at: {args.model}")
+                        elif file == os.path.basename(jit_model_path):
+                            jit_model_path = os.path.join(dir_name, file)
+                            jit_model_exists = True
+                            print(f"Using JIT model at: {jit_model_path}")
+
+    # Final check if model exists
     if not model_exists and not (args.use_jit and jit_model_exists):
-         print(f"Error: Model file not found!")
-         print(f"Checked for: {args.model}")
-         if args.use_jit:
-              print(f"Checked for JIT model: {jit_model_path}")
-         sys.exit(1)
-         
-    if args.use_jit and not jit_model_exists:
+        print("\nERROR: Model file not found!")
+        print(f"Checked for: {args.model}")
+        if args.use_jit:
+            print(f"Checked for JIT model: {jit_model_path}")
+        
+        # Look for any model file as a fallback
+        fallback_models = []
+        for root, dirs, files in os.walk("."):
+            for file in files:
+                if file.endswith(".pth") or file.endswith(".pt"):
+                    fallback_models.append(os.path.join(root, file))
+        
+        if fallback_models:
+            print("\nFound these model files that could be used instead:")
+            for model in fallback_models:
+                print(f"  {model}")
+            # Use the first one as fallback
+            args.model = fallback_models[0]
+            print(f"\nUsing {args.model} as fallback model")
+            model_exists = True
+        else:
+            print("No model files found in this directory or subdirectories.")
+            sys.exit(1)
+    
+    if args.use_jit and not jit_model_exists and model_exists:
         print(f"Warning: --use-jit specified, but JIT model '{jit_model_path}' not found. Will use regular model '{args.model}'.")
 
+    # Create and start the processor
     processor = SensorDataProcessor(
         model_path=args.model,
         window_size=args.window,
         confidence_threshold=args.threshold,
-        use_jit=args.use_jit
+        use_jit=args.use_jit,
+        debug=args.debug
     )
 
     processor.start(i2c_device=args.i2c)
