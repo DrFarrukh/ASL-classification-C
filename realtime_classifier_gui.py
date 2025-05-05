@@ -405,7 +405,10 @@ class SensorDataProcessor:
                     try:
                         # Parse the line from the C process
                         line = line.strip()
-                        if line.startswith("Raw C Output:"):
+                        print(f"C output: {line}")  # Debug print
+                        
+                        # Try different formats of C output
+                        if "Raw C Output:" in line:
                             # Format: "Raw C Output: <sensor_idx> <gx> <gy> <gz> <ax> <ay> <az>"
                             parts = line.split()
                             if len(parts) >= 8:
@@ -417,10 +420,16 @@ class SensorDataProcessor:
                                 ay = float(parts[8]) if len(parts) > 8 else 0
                                 az = float(parts[9]) if len(parts) > 9 else 0
                                 
+                                print(f"Parsed sensor {sensor_idx}: gx={gx}, gy={gy}, gz={gz}, ax={ax}, ay={ay}, az={az}")  # Debug print
+                                
                                 # Store data in the appropriate sensor buffer
                                 if 0 <= sensor_idx < 5:  # We have 5 sensors (0-4)
                                     sensor_data = [gx, gy, gz, ax, ay, az]
                                     self.sensor_buffers[sensor_idx].append(sensor_data)
+                                    
+                                    # Print buffer sizes for debugging
+                                    buffer_sizes = [len(buffer) for buffer in self.sensor_buffers]
+                                    print(f"Buffer sizes: {buffer_sizes} (need {self.window_size} each)")
                                     
                                     # Check if all buffers are full enough for prediction
                                     self._check_and_process_data()
@@ -447,25 +456,34 @@ class SensorDataProcessor:
 
     def _check_and_process_data(self):
         """Check if all buffers are full and queue data for prediction."""
-        # Check if all buffers have enough data
-        if all(len(buffer) >= self.window_size for buffer in self.sensor_buffers):
-            # Create a numpy array from the buffers
-            window_data = np.array([list(buffer) for buffer in self.sensor_buffers])
+        # For debugging, always make a prediction even with partial data
+        # Fill any empty buffers with zeros
+        for i, buffer in enumerate(self.sensor_buffers):
+            if len(buffer) < self.window_size:
+                # Fill with zeros to reach window_size
+                zeros_needed = self.window_size - len(buffer)
+                print(f"Filling sensor {i} buffer with {zeros_needed} zero entries")
+                for _ in range(zeros_needed):
+                    buffer.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        
+        # Create a numpy array from the buffers
+        window_data = np.array([list(buffer) for buffer in self.sensor_buffers])
+        print(f"Window data shape: {window_data.shape}")  # Debug print
+        
+        # Queue the data for processing
+        try:
+            self.data_queue.put(window_data, block=False)
+            print(f"Data queued for prediction. Queue size: {self.data_queue.qsize()}")
             
-            # Queue the data for processing
-            try:
-                self.data_queue.put(window_data, block=False)
-                print(f"Data queued for prediction. Queue size: {self.data_queue.qsize()}")
-                
-                # Start the processing thread if not already running
-                if not hasattr(self, 'processor_thread') or not self.processor_thread.is_alive():
-                    self.processor_thread = threading.Thread(target=self.process_data_loop, name="Processor")
-                    self.processor_thread.daemon = True
-                    self.processor_thread.start()
-                    print("Started prediction processing thread.")
-            except queue.Full:
-                # Queue is full, skip this window
-                print("Queue full, skipping this window")
+            # Start the processing thread if not already running
+            if not hasattr(self, 'processor_thread') or not self.processor_thread.is_alive():
+                self.processor_thread = threading.Thread(target=self.process_data_loop, name="Processor")
+                self.processor_thread.daemon = True
+                self.processor_thread.start()
+                print("Started prediction processing thread.")
+        except queue.Full:
+            # Queue is full, skip this window
+            print("Queue full, skipping this window")
     
     def process_data_loop(self):
         """Main loop for processing data and making predictions"""
@@ -516,14 +534,11 @@ class SensorDataProcessor:
                         confidence = float(probs[pred_idx])
                         self.last_probs = probs  # Store for visualization
                 
-                # Update GUI with prediction
-                if confidence >= self.confidence_threshold:
-                    letter = self.class_names[pred_idx]
-                    print(f"Prediction: {letter} (Confidence: {confidence:.2f})")
-                    if self.gui:
-                        self.gui.update_prediction(letter, confidence)
-                else:
-                    print(f"Prediction below threshold: {self.class_names[pred_idx]} ({confidence:.2f})")
+                # Always update GUI with prediction regardless of confidence
+                letter = self.class_names[pred_idx]
+                print(f"Prediction: {letter} (Confidence: {confidence:.2f})")
+                if self.gui:
+                    self.gui.update_prediction(letter, confidence)
                     
             except Exception as e:
                 if self.running:
