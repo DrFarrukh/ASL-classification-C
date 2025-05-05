@@ -69,9 +69,10 @@ JETSON_INFERENCE_DIR=$(dirname "$DOCKER_DIR")
 cd "$JETSON_INFERENCE_DIR"
 
 # Run the Docker container
+# The dusty-nv script expects the command as the last argument without any flag
 "$DOCKER_SCRIPT_PATH" \
     --volume "$ASL_DIR:/asl" \
-    --workdir /asl
+    "cd /asl && python3 realtime_classifier.py --use-jit"
 
 # Return to the original directory
 cd "$ASL_DIR"
