@@ -110,6 +110,7 @@ class SensorDataProcessor:
         # For tracking predictions
         self.recent_predictions = []
         self.recent_confidences = []
+        self.last_probs = None  # Store last probability distribution
 
         # Load model
         print(f"Loading scalogram model from {model_path}...")
@@ -352,7 +353,7 @@ class SensorDataProcessor:
                     probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
                     pred_idx = int(np.argmax(probs))
                     confidence = float(probs[pred_idx])
-                    self.last_probs = probs  # Store for later printing
+                    self.last_probs = probs  # Store for visualization
 
                 self.last_prediction = pred_idx
                 self.last_confidence = confidence
@@ -414,8 +415,8 @@ class SensorDataProcessor:
         cols = 9  # Number of columns
         for i in range(0, len(self.class_names), cols):
             row = self.class_names[i:i+cols]
-            probs = [f"{self.class_names[j]}: {probs[j]:.2f}" for j in range(i, min(i+cols, len(self.class_names)))]
-            print("  " + " | ".join(probs))
+            probs_str = [f"{self.class_names[j]}: {self.last_probs[j]:.2f}" for j in range(i, min(i+cols, len(self.class_names)))]
+            print("  " + " | ".join(probs_str))
         
         print("\n" + "="*60)
         print("  Press Ctrl+C to stop")

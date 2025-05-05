@@ -387,3 +387,138 @@ class SensorDataProcessor:
         self.stderr_thread.daemon = True
         self.stderr_thread.start()
         print("Stderr reader thread started.")
+        
+    def _read_process_output(self):
+        """Read data from the C process stdout"""
+        print("Stdout reader thread started.")
+        try:
+            for line in self.process.stdout:
+                if not hasattr(self, 'running') or self.running:
+                    try:
+                        # Parse the line from the C process
+                        line = line.strip()
+                        if line.startswith("Raw C Output:"):
+                            # Format: "Raw C Output: <sensor_idx> <gx> <gy> <gz> <ax> <ay> <az>"
+                            parts = line.split()
+                            if len(parts) >= 8:
+                                sensor_idx = int(parts[3])
+                                gx = float(parts[4])
+                                gy = float(parts[5])
+                                gz = float(parts[6])
+                                ax = float(parts[7])
+                                ay = float(parts[8]) if len(parts) > 8 else 0
+                                az = float(parts[9]) if len(parts) > 9 else 0
+                                
+                                # Process the sensor data
+                                # TODO: Add sensor data processing here
+                                print(f"Received data from sensor {sensor_idx}: gx={gx}, gy={gy}, gz={gz}, ax={ax}, ay={ay}, az={az}")
+                    except Exception as e:
+                        print(f"Error processing stdout line: {e}")
+                else:
+                    break
+        except Exception as e:
+            print(f"Error in stdout reader thread: {e}")
+        print("Stdout reader thread finished.")
+    
+    def _read_process_stderr(self):
+        """Read data from the C process stderr"""
+        print("Stderr reader thread started.")
+        try:
+            for line in self.process.stderr:
+                if not hasattr(self, 'running') or self.running:
+                    print(f"[C Stderr]: {line.strip()}")
+                else:
+                    break
+        except Exception as e:
+            print(f"Error in stderr reader thread: {e}")
+        print("Stderr reader thread finished.")
+
+# Inference and data processing logic (wherever window_data is processed for prediction)
+# (This will be inside the SensorDataProcessor class, in the thread/process loop)
+# Example (real code):
+if self.model_type == 'scalogram':
+    # window_data: (5, window, 6)
+    window_data = np.array(window_data)
+    grid_img = make_scalogram_grid(window_data)  # (H, W, 3)
+    img_pil = Image.fromarray((grid_img*255).astype(np.uint8))
+    img_pil = img_pil.resize((128, 128))
+    img_arr = np.array(img_pil).astype(np.float32) / 255.0
+    img_arr = (img_arr - 0.5) / 0.5  # Normalize to [-1, 1]
+    img_arr = np.transpose(img_arr, (2, 0, 1))  # (3, H, W)
+    img_tensor = torch.tensor(img_arr).unsqueeze(0)  # (1, 3, H, W)
+    with torch.no_grad():
+        logits = self.model(img_tensor)
+        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+        pred_idx = int(np.argmax(probs))
+        confidence = float(probs[pred_idx])
+else:
+    # Raw signal model
+    window_data = np.array(window_data)
+    window_tensor = torch.tensor(window_data, dtype=torch.float32).unsqueeze(0)  # (1, 5, window, 6)
+    window_tensor = window_tensor.permute(0, 3, 1, 2).contiguous()  # (1, 6, 5, window)
+    window_tensor = window_tensor.unsqueeze(2)  # (1, 6, 1, 5, window)
+    with torch.no_grad():
+        logits = self.model(window_tensor)
+        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+        pred_idx = int(np.argmax(probs))
+        confidence = float(probs[pred_idx])
+
+if __name__ == "__main__":
+    print("\n===== Starting ASL Classifier GUI =====\n")
+    parser = argparse.ArgumentParser(description="Real-time ASL classification GUI")
+    parser.add_argument('--model', type=str, default="best_rawsignal_cnn.pth",
+                        help="Path to model .pth file (raw or scalogram)")
+    parser.add_argument('--model-type', type=str, default="raw", choices=["raw", "scalogram"],
+                        help="Type of model to use: 'raw' for RawSignalCNN, 'scalogram' for SimpleJetsonCNN")
+    parser.add_argument('--window', type=int, default=30,
+                        help="Window size (samples)")
+    parser.add_argument('--threshold', type=float, default=0.3,
+                        help="Confidence threshold for predictions")
+    parser.add_argument('--i2c', type=str, default="/dev/i2c-1",
+                        help="I2C device path for sensor reading")
+    parser.add_argument('--debug', action='store_true',
+                        help="Enable additional debug output")
+    args = parser.parse_args()
+    
+    # Check for model file existence early
+    if not os.path.exists(args.model):
+        print(f"ERROR: Model file not found: {args.model}")
+        print("Available model files:")
+        for file in os.listdir("."):
+            if file.endswith(".pth") or file.endswith(".pt"):
+                print(f"  {file}")
+        print("\nPlease specify a valid model file with --model")
+        sys.exit(1)
+    
+    print(f"Using model: {args.model} (type: {args.model_type})")
+    print(f"Window size: {args.window}, Threshold: {args.threshold}")
+    print(f"I2C device: {args.i2c}")
+    
+    try:
+        print("Creating Tkinter root window...")
+        root = tk.Tk()
+        print("Creating GUI...")
+        gui = ASLClassifierGUI(root)
+        gui.model_type = args.model_type
+        gui.debug = args.debug
+        
+        print("Initializing sensor data processor...")
+        processor = SensorDataProcessor(
+            model_path=args.model,
+            window_size=args.window,
+            confidence_threshold=args.threshold,
+            gui=gui,
+            model_type=args.model_type
+        )
+        
+        print("Starting C process for sensor reading...")
+        processor.start_c_process(i2c_device=args.i2c)
+        
+        print("Starting GUI main loop...")
+        root.mainloop()
+        print("GUI main loop exited.")
+    except Exception as e:
+        print(f"\nERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
