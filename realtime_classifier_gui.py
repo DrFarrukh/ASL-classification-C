@@ -117,7 +117,13 @@ class ASLClassifierGUI:
         self.history_frame.pack(fill=tk.X, padx=20, pady=10)
         
         self.viz_frame = tk.Frame(master, bg='#2E2E2E')
-        self.viz_frame.pack(fill=tk.X, padx=20, pady=10)
+        self.viz_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        self.viz_label = tk.Label(self.viz_frame, text="Scalogram Visualization:", font=self.label_font, fg='white', bg='#2E2E2E')
+        self.viz_label.pack(anchor='w')
+        
+        self.viz_canvas = Canvas(self.viz_frame, width=600, height=200, bg='#1E1E1E', highlightthickness=0)
+        self.viz_canvas.pack(fill=tk.BOTH, expand=True)
         
         self.status_frame = tk.Frame(master, bg='#2E2E2E')
         self.status_frame.pack(fill=tk.X, padx=20, pady=10)
@@ -304,6 +310,7 @@ class SensorDataProcessor:
         self.last_prediction = None
         self.last_confidence = 0.0
         self.last_probs = None
+        self.last_scalogram = None  # Store the last scalogram for visualization
         
         print(f"\nInitializing SensorDataProcessor with:")
         print(f"  Window size: {window_size}")
@@ -436,22 +443,26 @@ class SensorDataProcessor:
             for line in self.process.stdout:
                 if self.running:
                     try:
-                        # Parse the line from the C process
+                                        # Parse the line from the C process
                         line = line.strip()
                         print(f"C output: {line}")  # Debug print
                         
                         # Try different formats of C output
-                        if "Raw C Output:" in line:
-                            # Format: "Raw C Output: <sensor_idx> <gx> <gy> <gz> <ax> <ay> <az>"
-                            parts = line.split()
-                            if len(parts) >= 8:
-                                sensor_idx = int(parts[3])
-                                gx = float(parts[4])
-                                gy = float(parts[5])
-                                gz = float(parts[6])
-                                ax = float(parts[7])
-                                ay = float(parts[8]) if len(parts) > 8 else 0
-                                az = float(parts[9]) if len(parts) > 9 else 0
+                        parts = line.split()
+                        # Direct format: "<sensor_idx> <gx> <gy> <gz> <ax> <ay> <az>"
+                        if len(parts) >= 7 and parts[0].isdigit():
+                            try:
+                                sensor_idx = int(parts[0])
+                                gx = float(parts[1])
+                                gy = float(parts[2])
+                                gz = float(parts[3])
+                                ax = float(parts[4])
+                                ay = float(parts[5])
+                                az = float(parts[6])
+                                print(f"Direct format: sensor {sensor_idx}: {gx}, {gy}, {gz}, {ax}, {ay}, {az}")
+                            except ValueError:
+                                print(f"Failed to parse direct format: {line}")
+                                continue
                                 
                                 print(f"Parsed sensor {sensor_idx}: gx={gx}, gy={gy}, gz={gz}, ax={ax}, ay={ay}, az={az}")  # Debug print
                                 
@@ -571,10 +582,13 @@ class SensorDataProcessor:
                 letter = self.class_names[pred_idx]
                 print(f"Prediction: {letter} (Confidence: {confidence:.2f})")
                 if self.gui:
-                    # Pass the scalogram image for visualization if using scalogram model
+                    # Store the scalogram for visualization
                     if self.model_type == 'scalogram':
+                        self.last_scalogram = grid_img
                         self.gui.update_prediction(letter, confidence, grid_img)
                     else:
+                        # For raw signal model, we can still visualize the raw data
+                        self.last_scalogram = None
                         self.gui.update_prediction(letter, confidence)
                     
             except Exception as e:

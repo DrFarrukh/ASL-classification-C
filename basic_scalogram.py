@@ -23,7 +23,7 @@ except ImportError:
     HAS_NUMPY_PIL = False
 
 class BasicScalogramViewer:
-    def __init__(self, root, window_size=30):
+    def __init__(self, root, window_size=91):
         self.root = root
         self.window_size = window_size
         
