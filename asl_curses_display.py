@@ -528,6 +528,18 @@ class SensorDataProcessor:
             self.process.terminate() 
             try:
                 # Wait for a short period for graceful termination
+                self.process.wait(timeout=2.0)
+                self.log("C process terminated gracefully.")
+            except subprocess.TimeoutExpired:
+                self.log("C process did not terminate gracefully after SIGTERM, sending SIGKILL...")
+                self.process.kill() # Force kill if needed
+                try:
+                    self.process.wait(timeout=1.0) # Wait briefly for kill
+                    self.log("C process killed.")
+                except subprocess.TimeoutExpired:
+                    self.log("Warning: C process did not respond to SIGKILL.")
+            except Exception as e:
+                self.log(f"Error during C process termination: {e}")
 
         # Join threads
         threads_to_join = []
