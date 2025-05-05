@@ -54,6 +54,7 @@ class SensorDataProcessor:
             curses.init_pair(4, curses.COLOR_CYAN, -1)   # Cyan for headers
             curses.init_pair(5, curses.COLOR_WHITE, -1)  # White for normal text
             self.stdscr.clear()
+            self.stdscr.nodelay(True)  # Make getch() non-blocking
             
         self.log(f"Initializing SensorDataProcessor with:")
         self.log(f"  Window size: {window_size}")
