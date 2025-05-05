@@ -51,7 +51,7 @@ sudo docker run --runtime nvidia -it --rm \
     $DISPLAY_DEVICE $V4L2_DEVICES \
     -v "$ASL_DIR:/asl" \
     -w /asl \
-    dustynv/l4t-pytorch:r32.7.1 \
+    dustynv/jetson-inference:r32.7.1 \
     bash -c "cd /asl && pip3 install matplotlib pywavelets && python3 realtime_classifier_visual.py --use-jit --threshold 0.3"
 
 echo "ASL classifier Docker container exited."
