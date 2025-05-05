@@ -91,7 +91,7 @@ sudo docker run --runtime nvidia -it --rm \
     -v "$ASL_DIR:/asl" \
     -w /asl \
     dustynv/jetson-inference:r32.7.1 \
-    bash -c "cd /asl && pip3 install matplotlib pywavelets && python3 realtime_classifier_visual.py --use-jit --threshold 0.6"
+    bash -c "cd /asl && python3 realtime_classifier_simple.py --use-jit --threshold 0.6"
 
 # Return to the original directory
 cd "$ASL_DIR"
