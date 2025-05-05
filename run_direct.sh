@@ -51,7 +51,7 @@ sudo docker run --runtime nvidia -it --rm \
     $DISPLAY_DEVICE $V4L2_DEVICES \
     -v "$ASL_DIR:/asl" \
     -w /asl \
-    dustynv/l4t-pytorch:r32.7.1-pth1.10-py3 \
+    dustynv/l4t-pytorch:r32.7.1 \
     bash -c "cd /asl && python3 realtime_classifier.py --use-jit"
 
 echo "ASL classifier Docker container exited."
